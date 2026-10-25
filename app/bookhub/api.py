@@ -247,9 +247,9 @@ def login():
         if h.config.guest_lan_only and not on_home_network():
             return fail("Guest access only works on the home network.", 403)
         from .assistant_bridge import disconnect
-        disconnect()
+        revocation = disconnect()
         secure_sessions.establish_session("guest")
-        return jsonify({"ok": True})
+        return jsonify({"ok": True, "core_revocation": revocation})
     target = h.profile(data.get("profile_id") or 0)
     if not target:
         return fail("That profile does not exist.", 404)
@@ -270,18 +270,18 @@ def login():
     if not ok:
         return fail("That passcode is not right.", 403)
     from .assistant_bridge import disconnect
-    disconnect()
+    revocation = disconnect()
     secure_sessions.establish_session(target["id"], via_admin, target_stamp=secure_sessions.profile_stamp(target),
                                       authenticator=admin if via_admin else None)
-    return jsonify({"ok": True})
+    return jsonify({"ok": True, "core_revocation": revocation})
 
 
 @bp.post("/logout")
 def logout():
     from .assistant_bridge import disconnect
-    disconnect()
+    revocation = disconnect()
     session.clear()
-    return jsonify({"ok": True})
+    return jsonify({"ok": True, "core_revocation": revocation})
 
 
 # -------------------------------------------------------------- profiles

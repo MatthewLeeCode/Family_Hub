@@ -87,3 +87,7 @@
 .assistant-connection-actions { flex-wrap: wrap; }
 .assistant-connection-confirm { display: grid; gap: 12px; border-top: 1px solid var(--line); padding-top: 12px; }
 .assistant-connection [role="status"]:empty, .assistant-connection-actions:empty { display: none; }
+.core-disconnect-notice { display: flex; gap: 18px; align-items: flex-start; margin: 16px 24px 0; padding: 16px; border: 1px solid var(--line2); background: var(--panel); color: var(--ink); font-size: .85rem; }
+.core-disconnect-notice p { margin: 8px 0 0; line-height: 1.6; }
+.core-disconnect-notice button { flex-shrink: 0; }
+@media (max-width: 700px) { .core-disconnect-notice { flex-direction: column; margin: 12px; } }

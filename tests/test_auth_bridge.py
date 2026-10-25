@@ -451,7 +451,7 @@ def test_login_projects_user_fields_and_rejects_invalid_token(client, fake_core)
     login(client, "You")
     fake_core["response"] = core_response({**user("matt"), "secret": "do-not-display"}, token=core_token())
     response = connect(client, password="x")
-    assert response.get_json() == {"user": user("matt"), "context": bind_view(client)}
+    assert response.get_json() == {"user": user("matt"), "context": bind_view(client), "core_revocation": "not_connected"}
     assert "do-not-display" not in response.get_data(as_text=True)
     fake_core["response"] = core_response(user("matt"), token="bad;other=credential")
     assert connect(client, password="x").status_code == 502

@@ -46,14 +46,25 @@ async function api(method, url, body, isActive, headers = {}) {
   try { data = await res.json(); } catch (e) { /* no body */ }
   if (method === 'POST' && ['/api/login', '/api/logout', '/api/assistant/login', '/api/assistant/logout'].includes(url) &&
       (res.ok || data?.context)) { sessionNotice?.postMessage('changed'); NotesUI.sessionChanged(); InboxUI.sessionChanged(); }
-  // Moved to another page meanwhile: a save still happened, but nothing may redraw the old page over the new one.
+  if (method === 'POST' && ['/api/login', '/api/logout', '/api/assistant/login', '/api/assistant/logout'].includes(url) &&
+      (res.ok || data?.context) && data?.core_revocation === 'unconfirmed') showCoreDisconnectNotice();
+  // Global identity outcomes survive navigation; page content must not redraw an old route.
   if (isActive ? !isActive() : gen !== routeGen) throw new Stale('moved on');
   if (!res.ok) {
     const error = new Error((data && data.error) || 'Something went wrong (' + res.status + ').');
-    error.status = res.status; error.code = data?.code; error.context = data?.context;
+    error.status = res.status; error.code = data?.code; error.context = data?.context; error.core_revocation = data?.core_revocation;
     throw error;
   }
   return data;
+}
+
+function showCoreDisconnectNotice() {
+  if (document.getElementById('core-disconnect-notice')) return;
+  const notice = el('aside', { id: 'core-disconnect-notice', class: 'core-disconnect-notice', role: 'status', 'aria-live': 'polite' },
+    el('div', {}, el('strong', { text: 'Previous assistant disconnection was not confirmed' }),
+      el('p', { text: 'Family Hub cleared its local connection, but could not confirm that the assistant service ended the previous session. A draft task already accepted by that session may still run until its original expiry (at most 15 minutes). Check its outcome before requesting another. This message does not mean all background work has stopped.' })),
+    el('button', { type: 'button', class: 'btn sm', text: 'Dismiss notice', onclick: () => notice.remove() }));
+  document.getElementById('main').before(notice);
 }
 
 // replaceChildren would print a missing (null) part as the word "null"; this leaves it out.

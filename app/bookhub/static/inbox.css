@@ -27,6 +27,11 @@
 .inbox-attachments ul { list-style: none; padding: 0; }
 .inbox-attachments li { display: flex; flex-direction: column; gap: 5px; padding: 10px 0; }
 .inbox-view :focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.inbox-draft-action { border-top: 1px solid var(--line2); padding: 18px 0; }
+.inbox-draft-action h3 { font-size: 1rem; margin: 0; }
+.inbox-draft-buttons { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 16px; }
+.inbox-request-ref { overflow-wrap: anywhere; }
+.inbox-draft-state { font-weight: 600; }
 @media (max-width: 800px) {
   .inbox-layout { grid-template-columns: minmax(0, 1fr); gap: 16px; }
   .inbox-messages { max-height: 260px; }

@@ -24,6 +24,8 @@ Set `ASSISTANT_CORE_URL` to the fixed server address. HTTP is accepted only for 
 
 The browser submits a core login through the same-origin Family Hub endpoint. The bridge stores the returned core session in the server-side Family Hub session and returns only the account's safe display fields. It does not put the core token in browser storage, a readable cookie or a URL. Logout attempts to revoke the upstream session and removes the local connection even if the core is unavailable.
 
+Disconnect, reconnect and Family profile changes return `core_revocation`: `confirmed` requires the core's exact successful acknowledgement; `unconfirmed` means the local connection was removed but remote revocation could not be established; `not_connected` means there was no current linked token. A timeout is not cancellation evidence. There is no durable retry queue in this version. A pending selected-mail request can remain eligible under its original core session until its bounded intent expires; independent authorized responsibilities have their own lifecycle.
+
 Origin and Fetch Metadata checks reject cross-site browser mutations. API responses disable caching. These controls complement application authorization; they do not replace TLS, strong login or deployment-level access controls.
 
 ## Current limits

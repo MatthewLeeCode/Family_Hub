@@ -265,6 +265,21 @@ const AssistantUI = (() => {
         if (version !== this.stateVersion) return;
         this.snapshot = snapshot;
         const previousScope = this.scope;
+        if (this.initialConversation) {
+          const requested = list(snapshot.conversations).find((conversation) => conversation.id === this.initialConversation &&
+            list(snapshot.spaces).some((space) => space.id === conversation.space_id));
+          if (!requested) {
+            this.chat = null; this.composer = null; this.transcript = null;
+            this.scopeSelect = null; this.scopeSelectors = []; this.conversationSignature = '';
+            fill(this.controls);
+            fill(this.body, el('h1', { text: 'Conversation unavailable' }),
+              paragraph('This conversation is not available to the current assistant account.'),
+              el('a', { class: 'btn', href: '#/assistant', text: 'Open your conversations' }));
+            return;
+          }
+          this.scope = requested.space_id; this.selected = requested.id;
+          selections.set(this.scope, this.selected);
+        }
         if (!list(snapshot.spaces).some((s) => s.id === this.scope)) this.scope = snapshot.user.private_space;
         if (!list(snapshot.spaces).some((s) => s.id === this.scope)) this.scope = list(snapshot.spaces)[0]?.id || '';
         if (previousScope !== this.scope) this.clearScopedControls();
@@ -296,6 +311,7 @@ const AssistantUI = (() => {
     workspaceSelector(label = 'Assistant workspace') {
       const select = el('select', { 'aria-label': label, onchange: async () => {
         const hadFocus = document.activeElement === select;
+        this.initialConversation = null;
         this.switching = true; this.stateVersion++;
         this.scope = select.value; selectedScope = this.scope; this.selected = ''; this.chat = null; this.selectionVersion++;
         this.clearScopedControls();
@@ -369,6 +385,7 @@ const AssistantUI = (() => {
         onclick: async () => {
           if (this.pending.has('send') || this.pending.has('new')) return;
           if (this.selected === conversation.id) return;
+          this.initialConversation = null;
           this.selected = conversation.id; selections.set(this.scope, this.selected); this.chat = null; this.selectionVersion++;
           this.transcriptNodes.clear(); fill(this.transcript); this.composer.value = drafts.get(this.selected) || '';
           this.renderConversations(); this.updateComposer();
@@ -381,6 +398,11 @@ const AssistantUI = (() => {
       if (!id) { this.renderChat(null); return; }
       const chat = await this.request('GET', 'conversations/' + pathId(id));
       if (this.selected !== id || version !== this.selectionVersion || stateVersion !== this.stateVersion) return;
+      if (chat?.conversation?.id !== id || chat.conversation.space_id !== this.scope) {
+        this.chat = null; this.renderChat(null);
+        throw new Error('The requested conversation could not be verified. Reload your conversations.');
+      }
+      if (this.initialConversation === id) this.initialConversation = null;
       this.chat = chat; this.renderChat(chat); this.renderConversations();
     }
     renderChat(chat) {
@@ -437,6 +459,7 @@ const AssistantUI = (() => {
     }
     async newChat() {
       if (this.pending.has('new') || this.pending.has('send') || inFlight.has(this.scope)) return;
+      this.initialConversation = null;
       const scope = this.scope, requestKey = Symbol('new-chat'); inFlight.set(scope, requestKey);
       this.pending.add('new'); this.stateVersion++; this.updateComposer();
       try {
@@ -808,10 +831,13 @@ const AssistantUI = (() => {
     }
   }
 
-  async function page(tab) {
+  async function page(tab, conversationId) {
     leave();
     identity(S.me?.id);
     const view = new View(tab); active = view;
+    if (tab === 'conversation') {
+      view.initialConversation = /^[A-Za-z0-9_-]{1,128}$/.test(conversationId || '') ? conversationId : 'invalid-conversation-reference';
+    }
     updateLauncher();
     try {
       await view.start();

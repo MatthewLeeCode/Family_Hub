@@ -14,6 +14,7 @@ from flask import Blueprint, current_app, jsonify, make_response, request, sessi
 
 from .api import fail, profile_only
 from .secure_sessions import rotate_session, view_context
+from . import assistant_mail_contract as mail_contract
 
 bp = Blueprint("assistant_bridge", __name__, url_prefix="/api/assistant")
 
@@ -44,7 +45,7 @@ def usable_profile():
     return None
 
 
-def call(method, path, data=None, login=False, project=None):
+def call(method, path, data=None, login=False, project=None, error_codes=None):
     token = session.get("assistant_token")
     if not login and not token:
         return fail("Sign in to your assistant account.", 401)
@@ -65,6 +66,14 @@ def call(method, path, data=None, login=False, project=None):
         if 300 <= response.status_code < 400:
             return fail("The assistant address redirected unexpectedly.", 502)
         if not response.ok:
+            if error_codes:
+                try:
+                    code = response.json().get("error")
+                    message = error_codes.get(response.status_code, {}).get(code) if isinstance(code, str) else None
+                except (ValueError, AttributeError):
+                    message = None
+                if message:
+                    return jsonify({"error": message, "code": code}), response.status_code
             messages = {400: "The assistant rejected that request.", 401: "Sign in to your assistant account.",
                         403: "Your assistant account cannot perform that action.", 404: "That assistant item was not found.",
                         409: "That assistant item changed. Refresh and try again.", 413: "That request is too large.",
@@ -95,7 +104,7 @@ def call(method, path, data=None, login=False, project=None):
             try:
                 payload = project(payload)
             except (KeyError, TypeError, ValueError):
-                return fail("The assistant returned an invalid connection status.", 502)
+                return fail("The assistant returned an invalid response.", 502)
         return jsonify(payload), response.status_code
     except (requests.RequestException, requests.cookies.CookieConflictError, ValueError):
         # Exceptions can include URL/header details; never send them to the browser.
@@ -122,24 +131,32 @@ def login(who):
     data = request.get_json(silent=True)
     if not isinstance(data, dict) or set(data) != {"login", "password"} or not all(isinstance(v, str) and 0 < len(v) <= 1024 for v in data.values()):
         return fail("Enter your assistant account and password.")
-    disconnect()
+    revocation = disconnect()
     response = make_response(call("POST", "login", data, login=True))
     # A failed reconnect can still disconnect and rotate the old account. Let
     # this initiating view retry; unrelated tabs keep their old binding.
     payload = response.get_json()
     payload["context"] = view_context()
+    payload["core_revocation"] = revocation
     response.set_data(current_app.json.dumps(payload))
     return response
 
 
 def disconnect():
     connected = bool(session.get("assistant_token"))
+    revocation = "not_connected"
     if connected:
-        call("POST", "logout", {})
+        response = make_response(call("POST", "logout", {}))
+        payload = response.get_json(silent=True)
+        # Clearing this browser's connection is not evidence that a remote
+        # revocation committed. Never turn an ambiguous timeout into success.
+        acknowledged = isinstance(payload, dict) and set(payload) == {"ok"} and payload["ok"] is True
+        revocation = "confirmed" if response.status_code == 200 and acknowledged else "unconfirmed"
     session.pop("assistant_token", None)
     session.pop("assistant_user", None)
     if connected:
         rotate_session()
+    return revocation
 
 
 @bp.post("/logout")
@@ -148,8 +165,8 @@ def logout(who):
     denied = usable_profile()
     if denied:
         return denied
-    disconnect()
-    return jsonify({"ok": True, "context": view_context()})
+    revocation = disconnect()
+    return jsonify({"ok": True, "context": view_context(), "core_revocation": revocation})
 
 
 def connection_payload(payload, space_id, item=None):
@@ -223,6 +240,36 @@ def connections(who, item=None):
         return fail("Choose a workspace.")
     path = "connections/" + item + "/control" if item else "connections?" + urlencode({"space_id": space_id})
     return call(request.method, path, body, project=lambda payload: connection_payload(payload, space_id, item))
+
+
+@bp.get("/mail/<string:item>/draft-intent")
+@bp.post("/mail/<string:item>/draft-runs")
+@bp.get("/mail/draft-runs/<string:identifier>")
+@profile_only
+def mail_intent(who, item=None, identifier=None):
+    denied = usable_profile()
+    if denied:
+        return denied
+    if request.args:
+        return fail("Unexpected request fields.")
+    if identifier is not None:
+        if not mail_contract.request_id(identifier):
+            return fail("Invalid draft request reference.")
+        return call("GET", "mail/draft-runs/" + identifier,
+                    project=lambda payload: mail_contract.summary(payload, identifier), error_codes=mail_contract.ERRORS)
+    if not mail_contract.reference(item):
+        return fail("Invalid message reference.")
+    if request.method == "GET":
+        return call("GET", "mail/" + item + "/draft-intent",
+                    project=lambda payload: mail_contract.preview(payload, item), error_codes=mail_contract.ERRORS)
+    if request.content_length and request.content_length > 4096:
+        return fail("That request is too large.", 413)
+    body = request.get_json(silent=True)
+    if (not isinstance(body, dict) or set(body) != {"request_id", "expected_source_digest"}
+            or not mail_contract.request_id(body["request_id"]) or not mail_contract.digest(body["expected_source_digest"])):
+        return fail("Expected a draft request reference and the reviewed source.")
+    return call("POST", "mail/" + item + "/draft-runs", body,
+                project=lambda payload: mail_contract.summary(payload, body["request_id"], item), error_codes=mail_contract.ERRORS)
 
 
 # Explicit path allowlist. No generic URL, arbitrary route or credential forwarding tool.
