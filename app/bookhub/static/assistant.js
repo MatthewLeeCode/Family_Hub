@@ -15,6 +15,7 @@ const AssistantUI = (() => {
   const selections = new Map();
   const inFlight = new Map();
   const connectionOperations = new Map();
+  const approvalOperations = new Map();
   const controlTabs = ['background', 'memory', 'activity', 'permissions', 'connections'];
   const connectionLabels = { ready: 'Ready', offline: 'Offline', review_required: 'Review required', disabled: 'Disabled', checking: 'Checking' };
   const connectionReasons = {
@@ -90,7 +91,7 @@ const AssistantUI = (() => {
   const prettyArgs = (args) => { try { return JSON.stringify(JSON.parse(args), null, 2); } catch (_) { return String(args); } };
   const running = (job) => ['queued', 'running', 'retry', 'waiting_approval', 'waiting_dependency'].includes(job.status);
 
-  function clearPrivateState() { identityEpoch++; drafts.clear(); selections.clear(); inFlight.clear(); connectionOperations.clear(); coreOwner = null; selectedScope = ''; }
+  function clearPrivateState() { identityEpoch++; drafts.clear(); selections.clear(); inFlight.clear(); connectionOperations.clear(); approvalOperations.clear(); coreOwner = null; selectedScope = ''; }
   function sessionChanged() {
     clearPrivateState(); familyContext = null;
     if (active) active.sessionChanged();
@@ -175,6 +176,7 @@ const AssistantUI = (() => {
       this.selectionVersion = 0; this.stateVersion = 0; this.scopeVersion = 0; this.refreshing = null; this.switching = false; this.pending = new Set(); this.transcriptNodes = new Map();
       this.connectionRows = []; this.connectionsScope = null; this.connectionsSignature = ''; this.connectionsNeedsReload = false;
       this.followupReviews = new Map(); this.followupNeedsReload = new Set(); this.approvalNeedsReload = new Set(); this.backgroundVerified = false;
+      this.inlineNodes = new Map(); this.approvalsScope = null;
       this.root = el('div', { class: 'assistant-view' });
       this.notice = el('p', { class: 'assistant-notice small', role: 'status', 'aria-live': 'polite' });
       this.body = el('div', { class: 'assistant-body', tabindex: -1 });
@@ -190,7 +192,7 @@ const AssistantUI = (() => {
       this.quickNotice = el('p', { class: 'assistant-notice small', role: 'status' });
       const content = el('div', { class: 'assistant-view' },
         field('Workspace', this.workspaceSelector('Quick chat workspace')), this.quickNotice, this.quickBody);
-      this.quickFrame = quickFrame(content); this.buildChat();
+      this.quickFrame = quickFrame(content); this.buildChat(); this.backgroundSignature = '';
     }
     detachQuick() {
       this.selectionVersion++;
@@ -198,6 +200,8 @@ const AssistantUI = (() => {
       this.scopeSelectors = this.scopeSelectors.filter((select) => select.isConnected);
       this.transcript = null; this.composer = null; this.chat = null; this.selected = '';
       this.transcriptNodes.clear(); this.conversationSignature = '';
+      this.chatUpdates = null; this.inlineNodes.clear(); this.backgroundSignature = '';
+      if (this.live() && this.snapshot) this.renderBackground();
     }
     async request(method, path, body, finishAfterUnmount = false) {
       const owner = identityKey();
@@ -322,6 +326,10 @@ const AssistantUI = (() => {
       this.refreshing = (async () => {
         const snapshot = await this.request('GET', 'state');
         if (version !== this.stateVersion) return;
+        if (snapshot?.user?.id !== coreOwner) { sessionChanged(); throw new Stale('assistant account changed'); }
+        const validWork = Array.isArray(snapshot.responsibilities) && snapshot.responsibilities.length <= 100 &&
+            new Set(snapshot.responsibilities.map((row) => row?.id)).size === snapshot.responsibilities.length &&
+            snapshot.responsibilities.every((row) => validFollowup(row, snapshot.user?.id, list(snapshot.spaces)));
         if (this.tab === 'background' && (!Array.isArray(snapshot.responsibilities) || snapshot.responsibilities.length > 100 ||
             new Set(snapshot.responsibilities.map((row) => row?.id)).size !== snapshot.responsibilities.length ||
             !snapshot.responsibilities.every((row) => validFollowup(row, snapshot.user?.id, list(snapshot.spaces))))) {
@@ -349,7 +357,8 @@ const AssistantUI = (() => {
         if (!list(snapshot.spaces).some((s) => s.id === this.scope)) this.scope = snapshot.user.private_space;
         if (!list(snapshot.spaces).some((s) => s.id === this.scope)) this.scope = list(snapshot.spaces)[0]?.id || '';
         if (previousScope !== this.scope) this.clearScopedControls();
-        if (this.tab === 'background') this.backgroundVerified = true;
+        this.backgroundVerified = validWork;
+        this.approvalsScope = this.scope;
         selectedScope = this.scope;
         if (!this.scopeSelect) this.buildControls();
         this.scopeSelectors.forEach((select) => { select.value = this.scope; });
@@ -377,6 +386,9 @@ const AssistantUI = (() => {
       catch (error) {
         if (this.live() && version === this.stateVersion && this.tab === 'background') {
           this.followupReviews.clear(); this.backgroundSignature = ''; this.backgroundVerified = false;
+          this.approvalsScope = null; this.inlineNodes.clear();
+          if (this.chatUpdates) { fill(this.chatUpdates, paragraph('Current requests could not be verified. Reload background work before deciding.', 'small dim')); this.chatUpdates.hidden = false; }
+          if (this.requestJump) this.requestJump.hidden = true;
           fill(this.body, el('h2', { text: 'Background unavailable' }), paragraph('The current state could not be verified. Reload before using follow-up controls.'),
             el('button', { class: 'btn', type: 'button', text: 'Reload background', onclick: () => this.refresh().catch((failure) => this.error(failure)) }));
         }
@@ -428,6 +440,8 @@ const AssistantUI = (() => {
     }
     buildChat() {
       this.transcript = el('div', { class: 'assistant-transcript', tabindex: 0, role: 'log', 'aria-label': 'Conversation', 'aria-live': 'polite', 'aria-relevant': 'additions text' });
+      this.chatUpdates = el('section', { class: 'assistant-inline-updates', 'aria-label': 'Workspace requests and updates', tabindex: -1, hidden: true });
+      this.inlineNodes.clear();
       this.composer = el('textarea', { rows: 3, maxlength: 16000, placeholder: 'Message your assistant…', 'aria-label': 'Message your assistant',
         oninput: () => { drafts.set(this.selected || this.scope, this.composer.value); this.updateComposer(); },
         onkeydown: (event) => { if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) { event.preventDefault(); this.send(); } } });
@@ -438,13 +452,16 @@ const AssistantUI = (() => {
       this.chatStatus = el('span', { class: 'small dim', role: 'status' });
       this.scopeHint = el('span', { class: 'small dim' });
       this.chatTitle = el('h2', { class: 'assistant-chat-title', text: 'New conversation' });
-      this.permissionLink = el('a', { href: '#/assistant/background', class: 'assistant-permission-link', hidden: true });
+      this.requestJump = el('button', { class: 'btn sm assistant-request-jump', type: 'button', hidden: true, onclick: () => {
+        const card = this.chatUpdates?.querySelector('[data-approval-id]');
+        if (card) { this.revealInline(card); card.focus({ preventScroll: true }); }
+      } });
       this.conversationList = el('div', { class: 'assistant-conversation-list' });
       this.newButton = el('button', { class: 'btn', type: 'button', text: 'New conversation', onclick: () => this.newChat() });
       const conversations = el('aside', { class: 'assistant-conversations', 'aria-label': 'Conversations in this workspace' }, el('h2', { text: 'Conversations' }), this.newButton, this.conversationList);
       const quick = this.quickOnly || !!this.quickBody;
       fill(this.quickBody || this.body, el('div', { class: 'assistant-chat-layout' },
-        el('section', { class: 'assistant-chat panel cut', 'aria-label': 'Assistant chat' }, this.chatTitle, this.permissionLink, this.transcript,
+        el('section', { class: 'assistant-chat', 'aria-label': 'Assistant chat' }, el('div', { class: 'row between assistant-chat-heading' }, this.chatTitle, this.requestJump), this.transcript,
           el('form', { class: 'assistant-composer', onsubmit: (event) => { event.preventDefault(); this.send(); } }, this.composer,
             el('div', { class: 'row between' }, this.scopeHint, el('div', { class: 'row' }, this.stopButton, this.sendButton)),
             el('div', { class: 'row between' }, paragraph('Enter to send · Shift + Enter for a new line', 'small dim'), this.chatStatus))),
@@ -502,7 +519,8 @@ const AssistantUI = (() => {
             node = el('article', { class: 'assistant-message ' + (message.role === 'user' ? 'from-user' : 'from-assistant') },
               el('span', { class: 'assistant-message-role', text: message.role === 'user' ? 'You' : 'Assistant' }),
               el('div', { class: 'assistant-message-text' }), el('span', { class: 'assistant-message-state small dim' }));
-            this.transcriptNodes.set(message.id, node); this.transcript.append(node);
+            this.transcriptNodes.set(message.id, node);
+            this.transcript.insertBefore(node, this.chatUpdates?.parentNode === this.transcript ? this.chatUpdates : null);
           }
           const body = node.querySelector('.assistant-message-text');
           if (body.textContent !== message.text) body.textContent = message.text;
@@ -512,9 +530,7 @@ const AssistantUI = (() => {
         }
       }
       if (follow) this.transcript.scrollTop = this.transcript.scrollHeight;
-      const approvals = list(this.snapshot.approvals).filter((a) => a.space_id === this.scope && a.status === 'pending');
-      this.permissionLink.hidden = !approvals.length;
-      this.permissionLink.textContent = approvals.length + ' permission request' + (approvals.length === 1 ? '' : 's') + ' waiting · Review';
+      this.renderInlineUpdates();
       this.updateComposer();
     }
     updateComposer() {
@@ -583,12 +599,15 @@ const AssistantUI = (() => {
     async act(key, path, body, button, scope = this.scope, scopeVersion = this.scopeVersion) {
       const operation = key.replace(/^(allow|deny)-/, 'approval-').replace(/^(pause|cancel)-/, 'responsibility-');
       const owner = identityKey(), context = this.context;
+      const approvalKey = path.startsWith('approvals/') ? scope + ':' + operation : null;
+      const decision = Symbol('approval-decision');
       const current = () => this.live() && identityKey() === owner && context === familyContext &&
         this.scope === scope && this.scopeVersion === scopeVersion;
-      if (!current() || this.switching || !button.isConnected || this.pending.has(operation)) return;
+      if (!current() || this.switching || !button.isConnected || this.pending.has(operation) || (approvalKey && approvalOperations.has(approvalKey))) return;
       const hadFocus = document.activeElement === button;
+      if (approvalKey) approvalOperations.set(approvalKey, decision);
       this.pending.add(operation); this.stateVersion++; button.disabled = true;
-      for (const sibling of this.root.querySelectorAll('[data-operation]')) if (sibling.dataset.operation === operation) sibling.disabled = true;
+      for (const sibling of this.workElements('[data-operation]')) if (sibling.dataset.operation === operation) sibling.disabled = true;
       try {
         await this.request('POST', path, body); this.pending.delete(operation);
         if (!current()) return;
@@ -602,13 +621,14 @@ const AssistantUI = (() => {
         if (current()) this.error(error);
       }
       finally {
+        if (approvalKey && approvalOperations.get(approvalKey) === decision) approvalOperations.delete(approvalKey);
         this.pending.delete(operation);
         if (current()) {
           button.disabled = false;
-          for (const sibling of this.root.querySelectorAll('[data-operation]')) if (sibling.dataset.operation === operation) sibling.disabled = false;
+          for (const sibling of this.workElements('[data-operation]')) if (sibling.dataset.operation === operation) sibling.disabled = false;
           if (hadFocus && (!document.activeElement || document.activeElement === document.body)) {
-            const next = Array.from(this.root.querySelectorAll('[data-focus-key]')).find((node) => node.dataset.focusKey === key);
-            (next || this.quickBody || this.body).focus({ preventScroll: true });
+            const next = this.workElements('[data-focus-key]').find((node) => node.dataset.focusKey === key);
+            (next || this.composer || this.quickBody || this.body).focus({ preventScroll: true });
           }
         }
       }
@@ -617,11 +637,14 @@ const AssistantUI = (() => {
       const operation = key.replace(/^(allow|deny)-/, 'approval-').replace(/^(pause|cancel)-/, 'responsibility-');
       const scope = this.scope, scopeVersion = this.scopeVersion;
       const button = el('button', { class: cls, type: 'button', text: label, 'data-focus-key': key,
-        'data-operation': operation, disabled: this.pending.has(operation), onclick: () => { if (validate()) this.act(key, path, body, button, scope, scopeVersion); } });
+        'data-operation': operation, disabled: this.pending.has(operation) || approvalOperations.has(scope + ':' + operation), onclick: () => { if (validate()) this.act(key, path, body, button, scope, scopeVersion); } });
       return button;
     }
     clearScopedControls() {
       this.scopeVersion++;
+      this.approvalsScope = null; this.inlineNodes.clear();
+      if (this.chatUpdates) { fill(this.chatUpdates); this.chatUpdates.hidden = true; }
+      if (this.requestJump) this.requestJump.hidden = true;
       this.followupReviews.clear(); this.followupNeedsReload.clear();
       this.approvalNeedsReload.clear();
       this.backgroundVerified = false;
@@ -900,7 +923,7 @@ const AssistantUI = (() => {
       }
       if (!current() || this.followupReviews.get(row.id) !== entry) return;
       this.backgroundSignature = ''; this.renderBackground();
-      if (hadFocus && entry.data?.can_resume) this.body.querySelector('[data-focus-key="resume-' + row.id + '"]')?.focus({ preventScroll: true });
+      if (hadFocus && entry.data?.can_resume) this.workElements('[data-focus-key="resume-' + row.id + '"]')[0]?.focus({ preventScroll: true });
     }
     async controlFollowup(row, status, button, review = null) {
       const epoch = this.scopeVersion, owner = identityKey(), context = this.context;
@@ -934,7 +957,7 @@ const AssistantUI = (() => {
         if (current()) this.error(error);
       }
       if (current() && hadFocus && (!document.activeElement || document.activeElement === document.body)) {
-        (this.body.querySelector('[data-followup-id="' + row.id + '"]') || this.body).focus({ preventScroll: true });
+        (this.workElements('[data-followup-id="' + row.id + '"]')[0] || this.body).focus({ preventScroll: true });
       }
     }
     followupCard(row) {
@@ -993,8 +1016,107 @@ const AssistantUI = (() => {
           row.dependency_state === 'bound' ? this.dependencyList(row.dependencies) : paragraph('Dependencies not recorded. This older follow-up keeps its original scheduling behavior.', 'small dim')),
         controls, busy ? paragraph('Checking the current result…', 'small dim') : null, reviewPanel);
     }
+    workElements(selector) {
+      return [...new Set([...this.root.querySelectorAll(selector), ...(this.quickBody?.querySelectorAll(selector) || [])])];
+    }
+    revealInline(node) {
+      this.transcript.scrollTop += node.getBoundingClientRect().top - this.transcript.getBoundingClientRect().top - 8;
+    }
+    inlineFollowups() {
+      if (!this.backgroundVerified) return [];
+      return list(this.snapshot.responsibilities).filter((row) => row.space_id === this.scope &&
+        (row.status === 'paused' || row.availability === 'waiting' || ['completed', 'expired', 'exhausted'].includes(row.status) || row.block_reason === 'unresolved_effect'));
+    }
+    followupNeedsInput(row) {
+      return (row.status === 'paused' && row.can_review_resume) || this.followupReviews.has(row.id);
+    }
+    inlineNotification(title, body, at = null, attributes = {}) {
+      const full = String(body || ''), brief = full.length > 160 ? full.slice(0, 157).trimEnd() + '…' : full;
+      return el('article', { class: 'assistant-inline-notification', ...attributes },
+        el('p', {}, el('span', { class: 'assistant-update-dot', 'aria-hidden': 'true', text: '·' }),
+          el('strong', { text: title }), brief ? el('span', { text: ' — ' + brief }) : null,
+          at ? el('time', { class: 'assistant-update-time', text: dateTime(at) }) : null),
+        full.length > 160 ? el('details', {}, el('summary', { text: 'More' }), paragraph(full, '')) : null);
+    }
+    approvalCard(approval) {
+      const expired = approval.expires_at <= Date.now();
+      const available = approval.dependency_blocked === false && !this.approvalNeedsReload.has(approval.id);
+      const canDecide = (approve) => {
+        const current = list(this.snapshot?.approvals).find((row) => row.id === approval.id && row.space_id === this.scope);
+        return this.approvalsScope === this.scope && current?.status === 'pending' && current.dependency_blocked === false &&
+          !this.approvalNeedsReload.has(approval.id) && current.expires_at === approval.expires_at && current.arguments === approval.arguments &&
+          current.action_digest === approval.action_digest && current.job_id === approval.job_id && (!approve || current.expires_at > Date.now());
+      };
+      const job = list(this.snapshot.jobs).find((row) => row.id === approval.job_id && row.space_id === this.scope);
+      const followup = list(this.snapshot.responsibilities).find((row) => row.space_id === this.scope && row.current_job?.id === approval.job_id);
+      const context = followup ? 'Follow-up: ' + followup.title : job ? 'For: ' + job.title : 'Request in this workspace';
+      return el('article', { class: 'panel cut assistant-approval', 'data-approval-id': approval.id, tabindex: -1 },
+        paragraph('Permission request', 'assistant-message-role'), el('h3', { text: approval.capability }),
+        paragraph(context, 'small dim'),
+        paragraph('Allow once authorises only the exact action below. It does not change your standing permissions.', 'small dim'),
+        el('pre', { class: 'assistant-arguments', tabindex: 0, 'aria-label': 'Exact action arguments', text: prettyArgs(approval.arguments) }),
+        paragraph((expired ? 'Expired ' : 'Expires ') + dateTime(approval.expires_at), 'small dim'),
+        approval.dependency_blocked === true ? paragraph('This check is paused or waiting for required tools. Review the follow-up before deciding. The original expiry still applies.', 'small dim') :
+          !available ? paragraph('This request’s availability could not be verified. Reload its current state before deciding.', 'small dim') : null,
+        expired ? paragraph('This request can no longer be approved.', 'small dim') : null,
+        available ? el('div', { class: 'row assistant-approval-actions' }, expired ? null :
+          this.action('Allow once', 'allow-' + approval.id, 'approvals/' + pathId(approval.id), { approve: true }, 'btn pri', () => canDecide(true)),
+          this.action('Deny', 'deny-' + approval.id, 'approvals/' + pathId(approval.id), { approve: false }, 'btn', () => canDecide(false))) : null);
+    }
+    renderInlineUpdates() {
+      if (!this.chatUpdates || !this.transcript || !this.snapshot || this.approvalsScope !== this.scope) return;
+      for (const [id, entry] of this.followupReviews) {
+        const row = list(this.snapshot.responsibilities).find((item) => item.id === id && item.space_id === this.scope);
+        if (!row || row.dependency_state !== 'bound' || !row.can_review_resume) { this.followupReviews.delete(id); continue; }
+        if (entry.signature !== followupSignature(row) || row.expires_at <= Date.now()) {
+          entry.phase = 'stale'; entry.data = null; entry.message = row.expires_at <= Date.now() ? 'This follow-up expired.' : 'This follow-up changed. Review its current dependencies again.';
+        }
+      }
+      const follow = this.transcript.scrollHeight - this.transcript.clientHeight - this.transcript.scrollTop < 80;
+      const scoped = (name) => list(this.snapshot[name]).filter((row) => row.space_id === this.scope);
+      const records = [];
+      // These are workspace records, not invented chat messages or a new polling source.
+      for (const notice of scoped('notices').slice().sort((a, b) => b.created_at - a.created_at).slice(0, 3).reverse()) {
+        records.push({ key: 'notice-' + notice.id, signature: JSON.stringify(notice), render: () =>
+          this.inlineNotification(notice.title, notice.body, notice.created_at, { 'data-notice-id': notice.id }) });
+      }
+      for (const job of scoped('jobs').filter((row) => ['queued', 'running', 'retry'].includes(row.status) && row.id !== this.chat?.active_job).slice(0, 3)) {
+        records.push({ key: 'job-' + job.id, signature: JSON.stringify(job), render: () =>
+          this.inlineNotification(job.title, ({ queued: 'Queued', running: 'Working', retry: 'Waiting to retry' })[job.status] + (job.detail ? ' · ' + job.detail : ''), null, { 'data-update-job-id': job.id }) });
+      }
+      for (const row of this.inlineFollowups()) records.push({ key: 'followup-' + row.id,
+        signature: JSON.stringify([row, row.expires_at <= Date.now(), this.followupReviews.get(row.id), this.pending.has('responsibility-' + row.id), this.followupNeedsReload.has(row.id)]),
+        render: () => this.followupNeedsInput(row) ? this.followupCard(row) : this.inlineNotification(row.title,
+          (dependencyReasons[row.block_reason] || followupLabels[row.status]) + (row.next_check_at ? ' Next check: ' + dateTime(row.next_check_at) : ''), null, { 'data-update-followup-id': row.id }) });
+      const approvals = scoped('approvals').filter((item) => item.status === 'pending');
+      this.requestJump.hidden = approvals.length === 0;
+      this.requestJump.textContent = approvals.length + (approvals.length === 1 ? ' request' : ' requests');
+      this.requestJump.setAttribute('aria-label', 'Review ' + approvals.length + (approvals.length === 1 ? ' permission request' : ' permission requests'));
+      for (const row of approvals) records.push({ key: 'approval-' + row.id,
+        signature: JSON.stringify([row, row.expires_at <= Date.now(), this.pending.has('approval-' + row.id), approvalOperations.has(this.scope + ':approval-' + row.id), this.approvalNeedsReload.has(row.id)]),
+        render: () => this.approvalCard(row) });
+      const keys = new Set(records.map((row) => row.key));
+      let firstNewRequest = null;
+      for (const [key, entry] of this.inlineNodes) if (!keys.has(key)) { entry.node.remove(); this.inlineNodes.delete(key); }
+      for (const record of records) {
+        let entry = this.inlineNodes.get(record.key);
+        if (!entry) {
+          entry = { node: el('div', { class: 'assistant-inline-record', tabindex: -1 }), signature: null };
+          this.inlineNodes.set(record.key, entry); this.chatUpdates.append(entry.node);
+          if (!firstNewRequest && record.key.startsWith('approval-')) firstNewRequest = entry.node;
+        }
+        if (entry.signature !== record.signature) {
+          replacePreservingFocus(entry.node, record.render()); entry.signature = record.signature;
+        }
+      }
+      this.chatUpdates.hidden = records.length === 0;
+      if (this.chatUpdates.parentNode !== this.transcript) this.transcript.append(this.chatUpdates);
+      if (follow && firstNewRequest) this.revealInline(firstNewRequest);
+      else if (follow) this.transcript.scrollTop = this.transcript.scrollHeight;
+    }
     renderBackground() {
       const snapshot = this.snapshot;
+      if (!snapshot) return;
       if (this.tab === 'background' && !this.backgroundVerified) return;
       const scoped = (name) => list(snapshot[name]).filter((row) => row.space_id === this.scope);
       for (const [id, entry] of this.followupReviews) {
@@ -1004,9 +1126,11 @@ const AssistantUI = (() => {
           entry.phase = 'stale'; entry.data = null; entry.message = row.expires_at <= Date.now() ? 'This follow-up expired.' : 'This follow-up changed. Review its current dependencies again.';
         }
       }
+      this.renderInlineUpdates();
+      if (!['background', 'memory', 'activity'].includes(this.tab)) return;
       const signature = JSON.stringify([this.tab, this.scope, snapshot.approvals, snapshot.responsibilities, snapshot.jobs, snapshot.preferences, snapshot.notices,
         list(snapshot.approvals).map((a) => a.expires_at <= Date.now()), scoped('responsibilities').map((row) => row.expires_at <= Date.now()),
-        Array.from(this.pending), Array.from(this.followupReviews), Array.from(this.followupNeedsReload), Array.from(this.approvalNeedsReload)]);
+        Array.from(this.pending), Array.from(approvalOperations.keys()), Array.from(this.followupReviews), Array.from(this.followupNeedsReload), Array.from(this.approvalNeedsReload), !!this.quickBody]);
       if (signature === this.backgroundSignature) return;
       this.backgroundSignature = signature;
       if (this.tab === 'memory') {
@@ -1025,33 +1149,15 @@ const AssistantUI = (() => {
         return;
       }
       const approvals = scoped('approvals').filter((a) => a.status === 'pending');
-      const responsibilities = scoped('responsibilities');
+      const inlineIds = new Set(this.quickBody ? this.inlineFollowups().filter((row) => this.followupNeedsInput(row)).map((row) => row.id) : []);
+      const responsibilities = scoped('responsibilities').filter((row) => !inlineIds.has(row.id));
       replacePreservingFocus(this.body, el('h2', { text: 'Background' }),
         paragraph('Follow-ups continue while the assistant server is running. Permission requests wait here until you decide or they expire.'),
         el('section', { class: 'assistant-records', 'aria-label': 'Permission requests' },
-          el('h3', { text: 'Permission requests' }), approvals.length ? approvals.map((approval) => {
-            const expired = approval.expires_at <= Date.now();
-            const available = approval.dependency_blocked === false && !this.approvalNeedsReload.has(approval.id);
-            const canDecide = (approve) => {
-              const current = list(this.snapshot?.approvals).find((row) => row.id === approval.id && row.space_id === this.scope);
-              return this.backgroundVerified && current?.status === 'pending' && current.dependency_blocked === false &&
-                !this.approvalNeedsReload.has(approval.id) && current.expires_at === approval.expires_at && current.arguments === approval.arguments &&
-                current.action_digest === approval.action_digest && (!approve || current.expires_at > Date.now());
-            };
-            return el('article', { class: 'panel cut assistant-approval', 'data-approval-id': approval.id }, el('h3', { text: approval.capability }),
-              paragraph('Allow once authorises only the exact action below. It does not change your standing permissions.', 'small dim'),
-              el('pre', { class: 'assistant-arguments', tabindex: 0, 'aria-label': 'Exact action arguments', text: prettyArgs(approval.arguments) }),
-              paragraph((expired ? 'Expired ' : 'Expires ') + dateTime(approval.expires_at), 'small dim'),
-              approval.dependency_blocked === true ? paragraph('This check is paused or waiting for required tools. Review it in Background before deciding. The original expiry still applies.', 'small dim') :
-                !available ? paragraph('This request’s availability could not be verified. Reload its current state before deciding.', 'small dim') : null,
-              expired ? paragraph('This request can no longer be approved.', 'small dim') : null,
-              available ? el('div', { class: 'row' }, expired ? null :
-                this.action('Allow once', 'allow-' + approval.id, 'approvals/' + pathId(approval.id), { approve: true }, 'btn pri', () => canDecide(true)),
-                this.action('Deny', 'deny-' + approval.id, 'approvals/' + pathId(approval.id), { approve: false }, 'btn', () => canDecide(false))) : null);
-          }) : paragraph('No permission requests waiting.', 'small dim')),
+          el('h3', { text: 'Permission requests' }), approvals.length ? (this.quickBody ? paragraph('Requests are shown in Quick chat.', 'small dim') : approvals.map((approval) => this.approvalCard(approval))) : paragraph('No permission requests waiting.', 'small dim')),
         el('section', { class: 'assistant-records', 'aria-label': 'Follow-ups' }, el('h3', { text: 'Follow-ups' }),
           responsibilities.length ? responsibilities.map((row) => this.followupCard(row)) :
-            paragraph('Ask the assistant to “Watch my inbox” to try a timed and event-triggered follow-up.', 'small dim')),
+            paragraph(inlineIds.size ? 'Follow-ups needing attention are shown in Quick chat.' : 'Ask the assistant to “Watch my inbox” to try a timed and event-triggered follow-up.', 'small dim')),
         el('section', { class: 'assistant-records' }, el('h3', { text: 'Running now' }), this.jobList(scoped('jobs').filter(running))));
       this.body.tabIndex = -1;
     }

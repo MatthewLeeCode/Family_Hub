@@ -645,6 +645,232 @@ function backgroundSnapshot() {
   return data;
 }
 
+for (const mode of ['main', 'quick']) test('inline chat ' + mode + ' decides a background request without leaving the thread or duplicating controls', async (t) => {
+  const data = backgroundSnapshot();
+  data.approvals[0].job_id = 'background-job';
+  data.jobs = [{ id: 'background-job', space_id: 'private', kind: 'agent', title: 'Check another conversation', status: 'waiting_approval' }];
+  data.notices = [{ id: 'saved', space_id: 'private', title: 'Attachment saved', body: '<img src=x onerror=window.bad=true>', created_at: 1 },
+    { id: 'foreign', space_id: 'shared', title: 'SHARED SECRET', body: 'Not the selected workspace', created_at: 2 }];
+  const f = await fixture(t, { data, assistant: true, hash: mode === 'main' ? '#/assistant' : '#/assistant/background' });
+  if (mode === 'quick') await f.page.getByRole('button', { name: 'Open quick chat', exact: true }).click();
+  const chat = f.page.getByRole('region', { name: 'Assistant chat', exact: true });
+  await chat.getByRole('button', { name: 'Allow once', exact: true }).waitFor();
+  assert.equal(await f.page.getByRole('button', { name: 'Allow once', exact: true }).count(), 1);
+  assert.match(await chat.innerText(), /Check another conversation|Attachment saved|PRIVATE ARGUMENT/);
+  assert.doesNotMatch(await chat.innerText(), /SHARED SECRET/);
+  assert.equal(await chat.locator('img,[onerror]').count(), 0);
+  const output = path.resolve(__dirname, '../.test-runs/inline-chat'); mkdirSync(output, { recursive: true });
+  await f.page.getByRole('button', { name: 'Review 1 permission request', exact: true }).click();
+  assert.equal(await f.page.evaluate(() => document.activeElement.dataset.approvalId), 'approval-private');
+  await f.page.screenshot({ path: path.join(output, mode + '-request.png'), fullPage: true });
+  await chat.getByLabel('Message your assistant').fill('Keep this unsent draft');
+  await chat.getByRole('button', { name: 'Allow once', exact: true }).focus();
+  await f.page.evaluate(() => { window.inlineAllow = [...document.querySelectorAll('button')].find((b) => b.textContent === 'Allow once'); });
+  const held = await f.control.holdNextSnapshot(); await held.started; await releaseAndSettle(f.page, held);
+  assert.equal(await f.page.evaluate(() => window.inlineAllow === document.activeElement && window.inlineAllow.isConnected), true);
+  f.control.backgroundHandler = async ({ req, json }) => {
+    assert.deepEqual(req.postDataJSON(), { approve: true }); data.approvals[0].status = 'approved'; await json({ ok: true }); return true;
+  };
+  const originalHash = new URL(f.page.url()).hash;
+  await chat.getByRole('button', { name: 'Allow once', exact: true }).click();
+  await chat.locator('[data-approval-id]').waitFor({ state: 'detached' });
+  assert.equal(new URL(f.page.url()).hash, originalHash);
+  assert.equal(await chat.getByLabel('Message your assistant').inputValue(), 'Keep this unsent draft');
+  assert.equal(f.requests.filter((row) => row.method === 'POST' && row.path.includes('/approvals/')).length, 1);
+  if (mode === 'quick') {
+    await f.page.getByRole('button', { name: 'Expand to main chat' }).click();
+    await f.page.getByRole('heading', { name: 'Private chat', exact: true }).waitFor();
+    assert.equal(await f.page.getByLabel('Message your assistant').inputValue(), 'Keep this unsent draft');
+    assert.equal(await f.page.locator('[data-approval-id]').count(), 0);
+  }
+});
+
+test('inline chat clears requests on workspace change and ignores a late decision callback', async (t) => {
+  const data = backgroundSnapshot();
+  const f = await fixture(t, { data, assistant: true, hash: '#/assistant' });
+  await f.page.getByRole('button', { name: 'Allow once', exact: true }).waitFor();
+  let start, release;
+  const started = new Promise((r) => { start = r; }), wait = new Promise((r) => { release = r; });
+  f.control.backgroundHandler = async ({ json }) => { start(); await wait; await json({ ok: true }); return true; };
+  await f.page.evaluate(() => { window.detachedInline = [...document.querySelectorAll('.assistant-approval button')]; });
+  await f.page.getByRole('button', { name: 'Allow once', exact: true }).click(); await started;
+  const held = await f.control.holdNextSnapshot();
+  await f.page.getByLabel('Assistant workspace', { exact: true }).selectOption('shared'); await held.started;
+  assert.equal(await f.page.locator('[data-approval-id]').count(), 0);
+  assert.doesNotMatch(await f.mainText(), /PRIVATE ARGUMENT|Private approval/);
+  await f.page.evaluate(() => window.detachedInline.forEach((button) => button.click()));
+  await releaseAndSettle(f.page, held);
+  const response = f.page.waitForResponse((res) => res.url().endsWith('/approvals/approval-private'));
+  release(); await (await response).finished(); await f.page.evaluate(() => new Promise(requestAnimationFrame));
+  assert.doesNotMatch(await f.mainText(), /PRIVATE ARGUMENT|Private approval|Saved\./);
+  assert.equal(f.requests.filter((row) => row.method === 'POST').length, 1);
+});
+
+test('inline chat reviews a paused follow-up then decides its unchanged approval in place', async (t) => {
+  const data = boundSnapshot(), row = data.responsibilities[0], approval = data.approvals[0];
+  row.current_job = { id: 'same-job', status: 'waiting_dependency', block_reason: 'owner_paused' };
+  approval.job_id = 'same-job'; approval.dependency_blocked = true;
+  const expires = approval.expires_at;
+  const f = await fixture(t, { data, assistant: true, hash: '#/assistant' });
+  await f.page.getByRole('button', { name: 'Review dependencies', exact: true }).waitFor();
+  assert.equal(await f.page.getByRole('button', { name: 'Allow once', exact: true }).count(), 0);
+  assert.match(await f.mainText(), /paused or waiting for required tools|PRIVATE ARGUMENT/);
+  f.control.backgroundHandler = async ({ req, url, json }) => {
+    if (url.pathname.includes('/responsibilities/')) {
+      assert.deepEqual(req.postDataJSON(), { status: 'active', revision: 1, dependency_review_digest: 'd'.repeat(64) });
+      Object.assign(row, { status: 'active', revision: 2, availability: 'ready', block_reason: null, can_pause: true, can_review_resume: false,
+        dependencies: [{ capability: 'mail.search', connection_id: null, availability: 'ready', reason_code: null }],
+        current_job: { id: 'same-job', status: 'waiting_approval', block_reason: null } });
+      approval.dependency_blocked = false;
+    } else { assert.deepEqual(req.postDataJSON(), { approve: true }); approval.status = 'approved'; }
+    await json({ ok: true }); return true;
+  };
+  await f.page.getByRole('button', { name: 'Review dependencies', exact: true }).click();
+  await f.page.getByRole('button', { name: 'Resume follow-up', exact: true }).waitFor();
+  assert.equal(await f.page.evaluate(() => document.activeElement.textContent), 'Resume follow-up');
+  await f.page.getByRole('button', { name: 'Resume follow-up', exact: true }).click();
+  await f.page.getByRole('button', { name: 'Allow once', exact: true }).waitFor();
+  assert.equal(approval.expires_at, expires);
+  await f.page.getByRole('button', { name: 'Allow once', exact: true }).click();
+  await f.page.locator('[data-approval-id]').waitFor({ state: 'detached' });
+  assert.equal(new URL(f.page.url()).hash, '#/assistant');
+  assert.equal(reviewGets(f).length, 1); assert.equal(followupPosts(f).length, 1);
+});
+
+test('inline chat quick clears an old identity while its approval response is pending', async (t) => {
+  const data = backgroundSnapshot();
+  const f = await fixture(t, { data, assistant: true }); await f.ready();
+  await f.page.getByRole('button', { name: 'Open quick chat', exact: true }).click();
+  await f.page.getByRole('button', { name: 'Allow once', exact: true }).waitFor();
+  let start, release;
+  const started = new Promise((r) => { start = r; }), wait = new Promise((r) => { release = r; });
+  f.control.backgroundHandler = async ({ json }) => { start(); await wait; await json({ ok: true }); return true; };
+  await f.page.getByRole('button', { name: 'Allow once', exact: true }).click(); await started;
+  const other = await f.context.newPage(); await other.goto(ORIGIN + '/notice');
+  await other.evaluate(() => { const channel = new BroadcastChannel('family-hub-session'); channel.postMessage('changed'); channel.close(); });
+  await f.page.getByRole('heading', { name: 'Your sign-in changed' }).first().waitFor();
+  const response = f.page.waitForResponse((res) => res.url().endsWith('/approvals/approval-private'));
+  release(); await (await response).finished(); await f.page.evaluate(() => new Promise(requestAnimationFrame));
+  assert.equal(await f.page.locator('[data-approval-id]').count(), 0);
+  assert.doesNotMatch(await f.page.locator('body').innerText(), /PRIVATE ARGUMENT|Private approval|Saved\./);
+  assert.equal(f.requests.filter((row) => row.method === 'POST').length, 1);
+});
+
+test('inline chat keeps a blocked request expiry unchanged through recovery', async (t) => {
+  const data = backgroundSnapshot(), approval = data.approvals[0], expires = approval.expires_at;
+  approval.dependency_blocked = true;
+  const f = await fixture(t, { data, assistant: true, hash: '#/assistant' });
+  await f.page.locator('[data-approval-id]').waitFor();
+  assert.equal(await f.page.getByRole('button', { name: 'Allow once', exact: true }).count(), 0);
+  await f.page.evaluate((time) => { Date.now = () => time; }, expires + 1);
+  await f.page.getByText('This request can no longer be approved.', { exact: true }).waitFor();
+  approval.dependency_blocked = false;
+  await f.page.getByRole('button', { name: 'Deny', exact: true }).waitFor();
+  assert.equal(await f.page.getByRole('button', { name: 'Allow once', exact: true }).count(), 0);
+  assert.equal(approval.expires_at, expires);
+  assert.equal(f.requests.filter((row) => row.method === 'POST').length, 0);
+});
+
+test('inline chat expansion retains an in-flight decision and cannot submit it twice', async (t) => {
+  const data = backgroundSnapshot();
+  const f = await fixture(t, { data, assistant: true }); await f.ready();
+  await f.page.getByRole('button', { name: 'Open quick chat', exact: true }).click();
+  await f.page.getByRole('button', { name: 'Allow once', exact: true }).waitFor();
+  await f.page.getByLabel('Message your assistant').fill('Keep my draft through this decision');
+  let start, release;
+  const started = new Promise((r) => { start = r; }), wait = new Promise((r) => { release = r; });
+  f.control.backgroundHandler = async ({ json }) => { start(); await wait; data.approvals[0].status = 'approved'; await json({ ok: true }); return true; };
+  await f.page.getByRole('button', { name: 'Allow once', exact: true }).click(); await started;
+  await f.page.getByRole('button', { name: 'Expand to main chat' }).click();
+  await f.page.getByRole('heading', { name: 'Private chat', exact: true }).waitFor();
+  assert.equal(await f.page.getByRole('button', { name: 'Allow once', exact: true }).isDisabled(), true);
+  assert.equal(await f.page.getByRole('button', { name: 'Deny', exact: true }).isDisabled(), true);
+  await f.page.evaluate(() => { for (const button of document.querySelectorAll('.assistant-approval button')) { button.disabled = false; button.click(); } });
+  assert.equal(f.requests.filter((row) => row.method === 'POST').length, 1);
+  const response = f.page.waitForResponse((res) => res.url().endsWith('/approvals/approval-private'));
+  release(); await (await response).finished();
+  await f.page.locator('[data-approval-id]').waitFor({ state: 'detached' });
+  assert.equal(await f.page.getByLabel('Message your assistant').inputValue(), 'Keep my draft through this decision');
+  assert.equal(f.requests.filter((row) => row.method === 'POST').length, 1);
+});
+
+test('inline chat clears quick decisions when its Background snapshot cannot be verified', async (t) => {
+  const data = backgroundSnapshot();
+  const f = await fixture(t, { data, assistant: true, hash: '#/assistant/background' });
+  await f.page.getByRole('button', { name: 'Open quick chat', exact: true }).click();
+  const quick = f.page.locator('#assistant-quick');
+  await quick.getByRole('button', { name: 'Allow once', exact: true }).waitFor();
+  await f.page.evaluate(() => { window.oldQuickDecisions = [...document.querySelectorAll('#assistant-quick .assistant-approval button')]; });
+  data.responsibilities[0].availability = 'unknown-state';
+  await f.page.getByRole('heading', { name: 'Background unavailable', exact: true }).waitFor();
+  assert.equal(await quick.locator('[data-approval-id]').count(), 0);
+  await f.page.evaluate(() => window.oldQuickDecisions.forEach((button) => button.click()));
+  assert.equal(f.requests.filter((row) => row.method === 'POST').length, 0);
+});
+
+test('inline chat routine updates are small plain notifications and only decisions use cards', async (t) => {
+  const data = boundSnapshot(), row = data.responsibilities[0];
+  Object.assign(row, { status: 'active', availability: 'waiting', block_reason: 'connector_offline', can_pause: true, can_review_resume: false,
+    next_probe_at: Date.now() + 10000, dependencies: [{ capability: 'mail.search', connection_id: null, availability: 'waiting', reason_code: 'connector_offline' }] });
+  data.notices = [{ id: 'saved', space_id: 'private', title: 'Attachment saved', body: 'Saved to your workspace.', created_at: 1 },
+    { id: 'detail', space_id: 'private', title: 'More detail available', body: 'Useful extra context. '.repeat(12) + 'DETAIL END', created_at: 2 }];
+  data.jobs = [{ id: 'other-work', space_id: 'private', title: 'Checking your other inbox', status: 'running', detail: 'Looking for important mail' }];
+  const f = await fixture(t, { data, assistant: true, hash: '#/assistant', viewport: { width: 1440, height: 960 } });
+  await f.page.locator('.assistant-inline-notification').first().waitFor();
+  const feed = f.page.getByRole('region', { name: 'Workspace requests and updates', exact: true });
+  assert.equal(await feed.locator('.assistant-inline-notification').count(), 4);
+  assert.equal(await feed.locator('.assistant-followup').count(), 0);
+  assert.equal(await feed.locator('.assistant-approval').count(), 1);
+  assert.equal(await feed.locator('.assistant-inline-notification h1,.assistant-inline-notification h2,.assistant-inline-notification h3').count(), 0);
+  assert.doesNotMatch(await feed.innerText(), /DETAIL END/);
+  const more = feed.locator('[data-notice-id="detail"] summary'); await more.click();
+  assert.match(await feed.innerText(), /DETAIL END/); await more.click();
+  for (const theme of ['dark', 'light', 'paper', 'blueprint']) {
+    await f.page.evaluate((theme) => { document.documentElement.dataset.theme = theme; document.documentElement.dataset.layout = 'quiet'; }, theme);
+    for (const appearance of await feed.locator('.assistant-inline-notification').evaluateAll((nodes) => nodes.map((node) => {
+      const style = getComputedStyle(node); return [style.borderTopWidth, style.paddingTop, style.backgroundColor];
+    }))) assert.deepEqual(appearance, ['0px', '0px', 'rgba(0, 0, 0, 0)']);
+  }
+  await f.page.evaluate(() => {
+    document.documentElement.dataset.theme = 'dark';
+    const thread = document.querySelector('.assistant-transcript'), feed = document.querySelector('.assistant-inline-updates');
+    thread.scrollTop += feed.getBoundingClientRect().top - thread.getBoundingClientRect().top;
+  });
+  const output = path.resolve(__dirname, '../.test-runs/inline-chat'); mkdirSync(output, { recursive: true });
+  await f.page.screenshot({ path: path.join(output, 'compact-updates.png'), fullPage: true });
+  assert.equal(f.requests.filter((request) => request.method === 'POST').length, 0);
+});
+
+test('inline chat uses message bubbles and keeps its composer visible with long messages across themes', async (t) => {
+  const data = backgroundSnapshot(); data.approvals = []; data.responsibilities = [];
+  const f = await fixture(t, { data, assistant: true, hash: '#/assistant' });
+  f.control.chatHandler = async ({ json }) => { await json({ conversation: data.conversations[0], active_job: null,
+    messages: [{ id: 'user-message', role: 'user', text: 'Can you check my inbox?', status: 'succeeded' },
+      { id: 'assistant-message', role: 'assistant', text: 'A longer plain-text reply.\n'.repeat(40), status: 'succeeded' }] }); return true; };
+  await f.page.locator('.assistant-message.from-user').waitFor();
+  const output = path.resolve(__dirname, '../.test-runs/inline-chat'); mkdirSync(output, { recursive: true });
+  for (const theme of ['dark', 'light', 'paper', 'blueprint']) {
+    await f.page.evaluate((theme) => { document.documentElement.dataset.theme = theme; document.documentElement.dataset.layout = 'quiet'; }, theme);
+    const geometry = await f.page.evaluate(() => {
+      const thread = document.querySelector('.assistant-transcript'), composer = document.querySelector('.assistant-composer');
+      return { scrolling: thread.scrollHeight > thread.clientHeight, separate: thread.getBoundingClientRect().bottom <= composer.getBoundingClientRect().top,
+        overflow: document.documentElement.scrollWidth > innerWidth + 1, userBorder: getComputedStyle(document.querySelector('.from-user')).borderLeftWidth };
+    });
+    assert.deepEqual(geometry, { scrolling: true, separate: true, overflow: false, userBorder: '0px' });
+    await f.page.screenshot({ path: path.join(output, theme + '.png'), fullPage: true });
+  }
+  await f.page.setViewportSize({ width: 390, height: 844 });
+  await f.page.evaluate(() => { document.documentElement.dataset.theme = 'dark'; });
+  assert.equal(await f.page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), true);
+  await f.page.screenshot({ path: path.join(output, 'mobile.png'), fullPage: true });
+  f.control.chatHandler = async ({ json }) => { await json({ conversation: data.conversations[0], active_job: null,
+    messages: [{ id: 'user-message', role: 'user', text: 'Can you check my inbox?', status: 'succeeded' },
+      { id: 'assistant-message', role: 'assistant', text: 'Your important attachment is saved. There is one reply ready for you to review.', status: 'succeeded' }] }); return true; };
+  await f.page.getByText('Your important attachment is saved. There is one reply ready for you to review.', { exact: true }).waitFor();
+  await f.page.setViewportSize({ width: 1440, height: 960 });
+  await f.page.screenshot({ path: path.join(output, 'conversation.png'), fullPage: true });
+});
+
 test('Background clears old controls during a delayed workspace load and preserves quick chat drafts', async (t) => {
   const f = await fixture(t, { data: backgroundSnapshot(), assistant: true, hash: '#/assistant/background' });
   await f.page.getByRole('button', { name: 'Resume', exact: true }).waitFor();
@@ -1043,7 +1269,7 @@ test('dependency-blocked approval preserves identity arguments and deadline thro
   const originalDeadline = await card.locator('p').filter({ hasText: /^Expires / }).innerText();
   await f.page.evaluate(() => { window.oldApprovalButtons = [...document.querySelectorAll('.assistant-approval button')]; });
   approval.dependency_blocked = true;
-  await f.page.getByText('This check is paused or waiting for required tools. Review it in Background before deciding. The original expiry still applies.', { exact: true }).waitFor();
+  await f.page.getByText('This check is paused or waiting for required tools. Review the follow-up before deciding. The original expiry still applies.', { exact: true }).waitFor();
   assert.equal(await card.locator('button').count(), 0);
   assert.equal(await card.locator('p').filter({ hasText: /^Expires / }).innerText(), originalDeadline);
   assert.match(await card.innerText(), /PRIVATE ARGUMENT/);
@@ -1063,7 +1289,7 @@ test('dependency-blocked approval preserves identity arguments and deadline thro
 test('dependency-blocked approval expiry never renews its deadline or makes Allow available after recovery', async (t) => {
   const data = backgroundSnapshot(), approval = data.approvals[0], deadline = approval.expires_at; approval.dependency_blocked = true;
   const f = await fixture(t, { data, assistant: true, hash: '#/assistant/background' });
-  await f.page.getByText('This check is paused or waiting for required tools. Review it in Background before deciding. The original expiry still applies.', { exact: true }).waitFor();
+  await f.page.getByText('This check is paused or waiting for required tools. Review the follow-up before deciding. The original expiry still applies.', { exact: true }).waitFor();
   await f.page.evaluate((expired) => { Date.now = () => expired; }, deadline + 1);
   await f.page.getByText('This request can no longer be approved.', { exact: true }).waitFor();
   assert.equal(await f.page.locator('.assistant-approval button').count(), 0);
@@ -1081,7 +1307,7 @@ test('dependency-blocked approval conflict reloads availability once without rep
   await f.page.getByRole('button', { name: 'Allow once', exact: true }).waitFor();
   f.control.backgroundHandler = async ({ json }) => { approval.dependency_blocked = true; await json({ error: 'The required tool is unavailable.' }, 409); return true; };
   await f.page.getByRole('button', { name: 'Allow once', exact: true }).click();
-  await f.page.getByText('This check is paused or waiting for required tools. Review it in Background before deciding. The original expiry still applies.', { exact: true }).waitFor();
+  await f.page.getByText('This check is paused or waiting for required tools. Review the follow-up before deciding. The original expiry still applies.', { exact: true }).waitFor();
   assert.equal(await f.page.locator('.assistant-approval button').count(), 0);
   const decisions = f.requests.filter((request) => request.method === 'POST' && request.path.includes('/approvals/'));
   assert.equal(decisions.length, 1); assert.deepEqual(decisions[0].body, { approve: true });
@@ -1115,6 +1341,6 @@ test('dependency-blocked approval rejects a still-connected stale button while q
   await f.page.getByRole('button', { name: 'Deny', exact: true }).click();
   assert.equal(f.requests.filter((request) => request.method === 'POST').length, 0);
   release();
-  await f.page.getByText('This check is paused or waiting for required tools. Review it in Background before deciding. The original expiry still applies.', { exact: true }).waitFor();
+  await f.page.getByText('This check is paused or waiting for required tools. Review the follow-up before deciding. The original expiry still applies.', { exact: true }).waitFor();
   assert.equal(await f.page.locator('.assistant-approval button').count(), 0);
 });
