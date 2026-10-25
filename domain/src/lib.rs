@@ -9,6 +9,8 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
+pub mod agent_notes;
+pub mod agent_notes_mcp;
 pub mod demo_identity;
 pub mod http;
 pub mod import;
@@ -143,6 +145,33 @@ pub struct Principal {
     space: Option<String>,
     binding: String,
     subject: String,
+    access: AccessMode,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AccessMode {
+    Ui,
+    McpRead,
+    McpCreate,
+}
+impl AccessMode {
+    fn from_binding(kind: &str, create: i64) -> Result<Self> {
+        match (kind, create) {
+            ("ui", 0) => Ok(Self::Ui),
+            ("mcp", 0) => Ok(Self::McpRead),
+            ("mcp", 1) => Ok(Self::McpCreate),
+            _ => Err(DomainError::denied()),
+        }
+    }
+    fn create_flag(self) -> i64 {
+        i64::from(self == Self::McpCreate)
+    }
+    fn label(self) -> &'static str {
+        match self {
+            Self::Ui => "ui",
+            Self::McpRead => "read",
+            Self::McpCreate => "create",
+        }
+    }
 }
 pub enum ExpectedCaller {
     Ui {
@@ -169,6 +198,7 @@ type BindingRow = (
     String,
     i64,
     bool,
+    i64,
 );
 
 const SCHEMA: &str = r#"
@@ -190,12 +220,13 @@ impl Store {
             .open(path)?;
         drop(file);
         let ownership = owner_lock(path)?;
-        let db = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_WRITE)?;
+        let mut db = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_WRITE)?;
         db.execute_batch(SCHEMA)?;
         db.execute(
             "INSERT INTO domain_meta VALUES('instance_id',?)",
             [uuid::Uuid::new_v4().to_string()],
         )?;
+        agent_notes::migrate_db(&mut db)?;
         drop(db);
         Self::open_owned(path, profile_path, false, ownership)
     }
@@ -212,9 +243,10 @@ impl Store {
         let db = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_WRITE)?;
         let version: i64 = db.query_row("PRAGMA user_version", [], |r| r.get(0))?;
         anyhow::ensure!(
-            version == 1,
+            version == 2,
             "Unsupported Notes store; initialize or migrate explicitly"
         );
+        agent_notes::validate_schema(&db, 2)?;
         db.execute_batch("PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA trusted_schema=OFF;")?;
         db.busy_timeout(std::time::Duration::from_secs(3))?;
         let profiles = Connection::open_with_flags(profile_path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
@@ -227,8 +259,10 @@ impl Store {
         })
     }
     pub fn profile_stamp(&self, profile: i64) -> Result<String> {
-        let value: Option<(Option<String>, String)> = self
-            .profiles
+        Self::profile_stamp_db(&self.profiles, profile)
+    }
+    fn profile_stamp_db(profiles: &Connection, profile: i64) -> Result<String> {
+        let value: Option<(Option<String>, String)> = profiles
             .query_row(
                 "SELECT passcode_hash,role FROM profiles WHERE id=?",
                 [profile],
@@ -246,10 +280,11 @@ impl Store {
             return Err(DomainError::denied());
         }
         let row: Option<BindingRow> = self.db.query_row(
-            "SELECT id,profile_id,profile_stamp,subject,space_id,kind,expires_at,revoked FROM bindings WHERE token_hash=?",
-            [digest(token.as_bytes())], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?,r.get(7)?))).optional()?;
-        let (binding, profile, stamp, subject, space, kind, expires, revoked) =
+            "SELECT id,profile_id,profile_stamp,subject,space_id,kind,expires_at,revoked,mcp_create FROM bindings WHERE token_hash=?",
+            [digest(token.as_bytes())], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?,r.get(7)?,r.get(8)?))).optional()?;
+        let (binding, profile, stamp, subject, space, kind, expires, revoked, create) =
             row.ok_or_else(DomainError::denied)?;
+        let access = AccessMode::from_binding(&kind, create)?;
         if revoked || expires <= now() || stamp != self.profile_stamp(profile)? {
             return Err(DomainError::denied());
         }
@@ -277,10 +312,11 @@ impl Store {
             space,
             binding,
             subject,
+            access,
         })
     }
     pub fn status(&self, principal: &Principal) -> Value {
-        json!({"active":self.active,"binding":principal.binding,"kind":principal.kind,"subject":principal.subject,"space_id":principal.space,"profile_id":principal.profile})
+        json!({"active":self.active,"binding":principal.binding,"kind":principal.kind,"subject":principal.subject,"space_id":principal.space,"profile_id":principal.profile,"access_mode":principal.access.label()})
     }
     fn enabled(&self) -> Result<()> {
         if !self.active {
@@ -293,15 +329,21 @@ impl Store {
         Ok(())
     }
     fn current_principal(&self, who: &Principal) -> Result<()> {
-        let stamp = self.profile_stamp(who.profile)?;
-        let valid:bool=self.db.query_row("SELECT EXISTS(SELECT 1 FROM bindings WHERE id=? AND profile_id=? AND profile_stamp=? AND subject=? AND kind=? AND space_id IS ? AND revoked=0 AND expires_at>?)",
-            params![who.binding,who.profile,stamp,who.subject,who.kind,who.space,now()],|r|r.get(0))?;
+        Self::current_principal_db(&self.db, &self.profiles, who)
+    }
+    fn current_principal_db(db: &Connection, profiles: &Connection, who: &Principal) -> Result<()> {
+        let stamp = Self::profile_stamp_db(profiles, who.profile)?;
+        let valid:bool=db.query_row("SELECT EXISTS(SELECT 1 FROM bindings WHERE id=? AND profile_id=? AND profile_stamp=? AND subject=? AND kind=? AND space_id IS ? AND mcp_create=? AND revoked=0 AND expires_at>?)",
+            params![who.binding,who.profile,stamp,who.subject,who.kind,who.space,who.access.create_flag(),now()],|r|r.get(0))?;
         if !valid {
             return Err(DomainError::denied());
         }
         Ok(())
     }
     fn access(db: &Connection, who: &Principal, space: &str, write: bool) -> Result<()> {
+        if who.access == AccessMode::McpCreate {
+            return Err(DomainError::denied());
+        }
         if !valid_id(space) || who.space.as_deref().is_some_and(|bound| bound != space) {
             return Err(DomainError::missing());
         }
@@ -321,6 +363,9 @@ impl Store {
         Ok(())
     }
     pub fn scopes(&self, who: &Principal) -> Result<Value> {
+        if who.access == AccessMode::McpCreate {
+            return Err(DomainError::denied());
+        }
         self.enabled()?;
         self.current_principal(who)?;
         let mut rows = self.db.prepare("SELECT s.id,s.name,s.kind,m.role,s.owner_profile FROM spaces s JOIN memberships m ON m.space_id=s.id WHERE m.profile_id=? ORDER BY s.kind,s.name,s.id")?;

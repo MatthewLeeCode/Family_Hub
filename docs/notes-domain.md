@@ -95,7 +95,7 @@ Stable error codes are `validation_error` (400), `access_denied` (403), `not_fou
 
 Rust tests cover two-user isolation, shared edits, read-only MCP credentials, mismatched binding scope/subject, profile revocation, inactive authority, stale revisions, idempotent replay after reopening, bounded listing, offline import rollback/replay and a real loopback daemon/native stdio child interaction with a clean environment. Python bridge tests cover view-context binding, guest/override rejection, same-origin enforcement, fixed routes, credential isolation, redirects, malformed/oversized responses and offline errors. Tests use only synthetic temporary data.
 
-The core still owns whether an agent may read a particular connection. The domain separately verifies the connection's current scope membership. Agent-written notes remain disabled until a host-supplied durable operation identity and reconciliation contract exist; an agent-generated JSON field is not a substitute for those controls.
+The core still owns whether an agent may use a particular connection. The domain separately verifies the connection's current scope membership. A separate create-only writer is implemented for synthetic verification, with host-supplied durable operation identity and immutable receipts. It is not enabled on existing reader bindings or enrolled on a live store automatically. See [Agent-created Notes](../domain/AGENT-NOTES.md) for the explicit schema migration, enrollment, uncertainty limits and verification. An agent-generated JSON field is not a substitute for those controls.
 
 ## Protocol compatibility and CI
 

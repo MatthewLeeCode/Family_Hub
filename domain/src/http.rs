@@ -5,7 +5,7 @@ use axum::{
     extract::{DefaultBodyLimit, Path as RoutePath, Query, State, rejection::JsonRejection},
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
-    routing::get,
+    routing::{get, post},
 };
 use std::sync::{Arc, Mutex};
 type Shared = Arc<Mutex<Store>>;
@@ -24,6 +24,7 @@ pub fn router(store: Store) -> Router {
         .route("/v1/status", get(status))
         .route("/v1/scopes", get(scopes))
         .route("/v1/scopes/{space}/notes", get(list).post(create))
+        .route("/v1/agent/scopes/{space}/notes", post(create_agent))
         .route(
             "/v1/scopes/{space}/notes/{id}",
             get(read).put(update).delete(delete),
@@ -113,6 +114,23 @@ async fn create(
     let Json(input) = input.map_err(|_| DomainError::invalid())?;
     run(state, headers, move |store, who| {
         store.create_note(who, &space, input)
+    })
+    .await
+}
+async fn create_agent(
+    State(state): State<Shared>,
+    headers: HeaderMap,
+    RoutePath(space): RoutePath<String>,
+    input: std::result::Result<Json<crate::agent_notes::AgentNoteEnvelope>, JsonRejection>,
+) -> Result<Json<Value>> {
+    let Json(input) = input.map_err(|_| DomainError::invalid())?;
+    run(state, headers, move |store, who| {
+        Ok(serde_json::to_value(store.create_agent_note(
+            who,
+            &space,
+            input.operation,
+            input.note,
+        )?)?)
     })
     .await
 }

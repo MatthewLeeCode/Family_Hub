@@ -15,6 +15,10 @@ path = "src/bin/server.rs"
 name = "family-domain-mcp"
 path = "src/bin/mcp.rs"
 
+[[bin]]
+name = "family-notes-writer"
+path = "src/bin/notes_writer.rs"
+
 [dependencies]
 anyhow = "1"
 axum = "0.8"

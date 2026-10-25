@@ -19,6 +19,14 @@ pub struct DemoSetup {
     pub shared_name: String,
 }
 
+#[derive(Debug)]
+pub struct WriterSetup {
+    pub profile_id: i64,
+    pub subject: String,
+    pub space: String,
+    pub binding: String,
+}
+
 pub fn write_private(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
@@ -36,6 +44,75 @@ pub fn write_private(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
     Ok(())
 }
 impl Store {
+    /// Explicit offline enrollment. Existing bindings and policies are never upgraded.
+    pub fn enroll_notes_writer(
+        &mut self,
+        setup: &WriterSetup,
+        staging: &Path,
+        program: &Path,
+        port: u16,
+    ) -> anyhow::Result<PathBuf> {
+        anyhow::ensure!(
+            !self.active,
+            "Enroll only while the Notes daemon is stopped"
+        );
+        anyhow::ensure!(
+            setup.profile_id > 0
+                && valid_id(&setup.subject)
+                && valid_id(&setup.space)
+                && valid_id(&setup.binding)
+                && port > 0,
+            "Invalid writer mapping"
+        );
+        let program = std::fs::canonicalize(program)?;
+        anyhow::ensure!(program.is_file(), "Writer executable is unavailable");
+        let tx = self
+            .db
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let stamp = Self::profile_stamp_db(&self.profiles, setup.profile_id)?;
+        let existing: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM bindings WHERE kind='mcp' AND mcp_create=0 AND profile_id=? AND subject=? AND space_id=? AND profile_stamp=? AND revoked=0 AND expires_at>?)",
+            params![setup.profile_id,setup.subject,setup.space,stamp,now()], |r| r.get(0))?;
+        anyhow::ensure!(
+            existing,
+            "No current read binding matches this existing profile, subject and workspace"
+        );
+        let duplicate: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM bindings WHERE id=?)",
+            [&setup.binding],
+            |r| r.get(0),
+        )?;
+        anyhow::ensure!(
+            !duplicate,
+            "Binding already exists; never upgrade or overwrite a connection"
+        );
+        let principal = Principal {
+            profile: setup.profile_id,
+            kind: "mcp".into(),
+            space: Some(setup.space.clone()),
+            binding: setup.binding.clone(),
+            subject: setup.subject.clone(),
+            access: AccessMode::McpCreate,
+        };
+        crate::agent_notes::writer_access(&tx, &principal, &setup.space)?;
+        let mut bytes = [0u8; 32];
+        rand::thread_rng().fill_bytes(&mut bytes);
+        let token = hex::encode(bytes);
+        let directory = staging.join(&setup.binding);
+        // Exclusive new files remain inert if enrollment fails before its DB commit.
+        write_private(
+            &directory.join("family-domain.credential"),
+            token.as_bytes(),
+        )?;
+        let manifest = directory.join("notes-writer-connection.json");
+        let connection = json!([{"id":setup.binding,"owner_id":setup.subject,"space_id":setup.space,"program":program,
+            "args":[format!("--port={port}"),format!("--binding={}",setup.binding),format!("--subject={}",setup.subject),format!("--space={}",setup.space)],
+            "tools":["notes_create"],"effects":{"notes_create":"local_write"},"operation_context":"family_notes_create_v1"}]);
+        write_private(&manifest, &serde_json::to_vec_pretty(&connection)?)?;
+        tx.execute("INSERT INTO bindings(id,token_hash,profile_id,profile_stamp,subject,space_id,kind,expires_at,mcp_create) VALUES(?,?,?,?,?,?,'mcp',?,1)",
+            params![setup.binding,digest(token.as_bytes()),setup.profile_id,stamp,setup.subject,setup.space,now()+7*24*60*60*1000])?;
+        tx.commit()?;
+        Ok(manifest)
+    }
     pub fn provision(
         &mut self,
         setup: &DemoSetup,

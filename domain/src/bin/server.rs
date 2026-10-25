@@ -10,6 +10,49 @@ struct Args {
 }
 #[derive(Subcommand)]
 enum Command {
+    /// Explicit schema-1 to schema-2 migration while the daemon is stopped.
+    MigrateAgentNotes {
+        #[arg(long)]
+        database: PathBuf,
+        #[arg(long, required = true)]
+        services_stopped: bool,
+    },
+    /// Enroll a separate synthetic create-only binding; never upgrades a reader.
+    EnrollNotesWriter {
+        #[arg(long)]
+        database: PathBuf,
+        #[arg(long)]
+        profiles_db: PathBuf,
+        #[arg(long)]
+        profile: i64,
+        #[arg(long)]
+        subject: String,
+        #[arg(long)]
+        space: String,
+        #[arg(long)]
+        binding: String,
+        #[arg(long)]
+        staging: PathBuf,
+        #[arg(long)]
+        program: PathBuf,
+        #[arg(long)]
+        port: u16,
+        #[arg(long, required = true)]
+        services_stopped: bool,
+    },
+    /// Content-free evidence only; never retries or settles a core action.
+    InspectAgentNoteReceipt {
+        #[arg(long)]
+        database: PathBuf,
+        #[arg(long)]
+        profiles_db: PathBuf,
+        #[arg(long)]
+        binding: String,
+        #[arg(long)]
+        operation: String,
+        #[arg(long, required = true)]
+        services_stopped: bool,
+    },
     /// Create an empty store and scoped synthetic credentials. Never overwrites.
     InitDemo {
         #[arg(long)]
@@ -61,6 +104,54 @@ enum Command {
 #[tokio::main]
 async fn main() -> Result<()> {
     match Args::parse().command {
+        Command::MigrateAgentNotes {
+            database,
+            services_stopped,
+        } => {
+            anyhow::ensure!(services_stopped, "Stop services before migration");
+            println!("{}", Store::migrate_agent_notes(&database)?);
+        }
+        Command::EnrollNotesWriter {
+            database,
+            profiles_db,
+            profile,
+            subject,
+            space,
+            binding,
+            staging,
+            program,
+            port,
+            services_stopped,
+        } => {
+            anyhow::ensure!(services_stopped, "Stop services before enrollment");
+            let mut store = Store::open(&database, &profiles_db, false)?;
+            let manifest = store.enroll_notes_writer(
+                &family_domain::provision::WriterSetup {
+                    profile_id: profile,
+                    subject,
+                    space,
+                    binding,
+                },
+                &staging,
+                &program,
+                port,
+            )?;
+            println!("{}", serde_json::json!({"manifest":manifest}));
+        }
+        Command::InspectAgentNoteReceipt {
+            database,
+            profiles_db,
+            binding,
+            operation,
+            services_stopped,
+        } => {
+            anyhow::ensure!(services_stopped, "Stop services before receipt inspection");
+            let store = Store::open(&database, &profiles_db, false)?;
+            println!(
+                "{}",
+                store.inspect_agent_note_receipt(&binding, &operation)?
+            );
+        }
         Command::InitDemo {
             database,
             profiles_db,
