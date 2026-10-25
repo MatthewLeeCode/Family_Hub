@@ -32,7 +32,7 @@ own small database and backed up to a plain file every day.
 | Covers | Give a book a different cover: upload a picture, pick one from Open Library, or have a plain one made from the title. Kept in Family Hub; the library is not changed |
 | Kinds | Each book is fiction, non-fiction, a graphic novel or tabletop; guessed on arrival, filterable, and fixable in bulk. The Library is split into Books and Graphic novels |
 | Manga and manhwa by chapter | Follow a series on reading sites; every chapter is downloaded and kept, and read in the browser. Optional, needs the series server |
-| Inbox | Drop in files, folders or archives; books are passed to the library and anything unusable is set aside with a reason |
+| Book intake | Drop in files, folders or archives; books are passed to the library and anything unusable is set aside with a reason |
 | Tags | Tags from the book file with the clutter removed, community tags from Open Library, Wikidata, Comic Vine (for comics) and shared tag packs, family tags, private personal tags; one search across all four; admins can hide or rename tags |
 | Ratings | 1 to 5 stars per profile, with the rest of the family's ratings shown, and the average from readers at large (Goodreads or Open Library) on every card |
 | Dashboard | Books read, this month, pages, authors, a monthly trend you can filter by tag or author; an admin view of the library and family |
@@ -43,6 +43,22 @@ own small database and backed up to a plain file every day.
 | Sync | Reading position from Readest or KOReader arrives automatically; Kindle reading can be pulled from Hardcover |
 | Goodreads | Each person can link their Goodreads profile: read and currently-reading shelves and ratings come in, and books the family has only on Kindle are listed, anonymously, with a button to find the EPUB |
 | Backup | Daily export of all book data (tags, ratings, history) to JSON; import to restore or move |
+
+## Assistant integration preview
+
+This development branch adds an optional connection to a separate Rust assistant
+service. Main chat and Quick chat share conversations, approvals and job controls.
+The new Inbox reads multiple sample mailboxes, saved-attachment status and local
+drafts. Notes uses a separate Rust domain service with private/shared workspaces.
+The household's existing appearance remains the default; each signed-in profile
+can select its own colours and Family, Quiet or Compact layout.
+
+See the [assistant interface](docs/assistant-interface.md),
+[Inbox interface](docs/inbox-interface.md) and
+[Notes setup](docs/notes-domain.md) for the contracts and current limits. Real
+Gmail/Outlook connections, sending mail and production identity/secret isolation
+are not part of this preview. Existing library features do not require the
+assistant or Notes services.
 
 ## Quick start
 

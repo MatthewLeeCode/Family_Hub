@@ -1,0 +1,25 @@
+name: Inbox interface regressions
+
+on:
+  push:
+    branches: [main, master, codex/assistant-integration]
+    paths: ["app/bookhub/static/**", "tests/test_inbox_ui.cjs", "package*.json", ".github/workflows/ui.yml"]
+  pull_request:
+    paths: ["app/bookhub/static/**", "tests/test_inbox_ui.cjs", "package*.json", ".github/workflows/ui.yml"]
+
+permissions:
+  contents: read
+
+jobs:
+  ui:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:ui

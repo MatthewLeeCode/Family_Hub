@@ -1,0 +1,35 @@
+.inbox-view { width: 100%; max-width: 1320px; margin: 0 auto; min-width: 0; }
+.inbox-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.inbox-heading h1 { margin-bottom: 4px; }
+.inbox-heading p { margin: 0; }
+.inbox-notice:empty { display: none; }
+.inbox-filters { display: flex; gap: 16px; flex-wrap: wrap; margin: 24px 0; }
+.inbox-filters .field { flex: 1 1 180px; min-width: 0; margin: 0; }
+.inbox-filters select, .inbox-index > input { width: 100%; min-width: 0; }
+.inbox-index > input { border: 1px solid var(--line2); border-radius: 5px; padding: 11px 12px; background: var(--bg); color: var(--ink); font: inherit; font-size: 13px; }
+.inbox-layout { display: grid; grid-template-columns: minmax(230px, 310px) minmax(0, 1fr); gap: 24px; }
+.inbox-index, .inbox-reader { min-width: 0; }
+.inbox-important-filter { display: flex; gap: 8px; align-items: center; font-size: .85rem; padding-top: 12px; cursor: pointer; }
+.inbox-important-filter input { width: auto; }
+.inbox-important-filter[hidden] { display: none; }
+.inbox-messages { max-height: 65vh; overflow: auto; border-top: 1px solid var(--line2); }
+.inbox-message { width: 100%; display: flex; flex-direction: column; gap: 7px; text-align: left; color: var(--ink); background: transparent; border: 0; border-bottom: 1px solid var(--line2); padding: 16px 12px; cursor: pointer; font: inherit; overflow-wrap: anywhere; }
+.inbox-message:hover, .inbox-message[aria-current] { background: var(--panel); }
+.inbox-message[aria-current] { box-shadow: inset 3px 0 var(--accent); }
+.inbox-sender { font-size: .85rem; }
+.inbox-reader { display: block; padding: 24px; align-self: start; overflow-wrap: anywhere; }
+.inbox-reader > p { margin-top: 12px; }
+.inbox-reader h2 { margin-top: 0; font-size: 1.25rem; line-height: 1.4; }
+.inbox-message-body { white-space: pre-wrap; line-height: 1.7; margin: 28px 0; }
+.inbox-tag { display: inline-block; width: fit-content; margin-top: 12px; padding: 3px 8px; font-size: .75rem; border: 1px solid var(--line2); }
+.inbox-attachments { border-top: 1px solid var(--line2); padding-top: 16px; }
+.inbox-attachments h3 { font-size: .95rem; }
+.inbox-attachments ul { list-style: none; padding: 0; }
+.inbox-attachments li { display: flex; flex-direction: column; gap: 5px; padding: 10px 0; }
+.inbox-view :focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+@media (max-width: 800px) {
+  .inbox-layout { grid-template-columns: minmax(0, 1fr); gap: 16px; }
+  .inbox-messages { max-height: 260px; }
+  .inbox-reader { padding: 18px; }
+  .inbox-filters { gap: 12px; }
+}

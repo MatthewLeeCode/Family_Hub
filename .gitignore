@@ -24,6 +24,11 @@ __pycache__/
 .pytest_cache/
 .test-runs/
 
+# Development-only browser test dependencies
+node_modules/
+test-results/
+playwright-report/
+
 # Editors and systems
 .DS_Store
 Thumbs.db
