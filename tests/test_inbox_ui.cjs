@@ -62,7 +62,7 @@ async function fixture(t, { profile = {}, status = {}, data = snapshot(), hash =
     data,
     next: null,
     status: { configured: true, signed_in: true, user: data.user, ...status },
-    previews: {}, runs: new Map(), mailHandler: null, chatHandler: null, revocation: 'not_connected', logoutWait: null,
+    previews: {}, runs: new Map(), mailHandler: null, chatHandler: null, backgroundHandler: null, revocation: 'not_connected', logoutWait: null,
     requests,
     async holdNextSnapshot() {
       let start, finish;
@@ -104,6 +104,10 @@ async function fixture(t, { profile = {}, status = {}, data = snapshot(), hash =
     }
     if (url.pathname === '/api/logout' && req.method() === 'POST') return json({ ok: true, core_revocation: control.revocation });
     if (url.pathname === '/api/assistant/login' && req.method() === 'POST') return json({ error: 'Sign-in failed', context: 'b'.repeat(64), core_revocation: control.revocation }, 401);
+    if (/^\/api\/assistant\/(responsibilities|approvals)\/[^/]+$/.test(url.pathname) && req.method() === 'POST') {
+      if (control.backgroundHandler && await control.backgroundHandler({ route, req, url, json })) return;
+      return json({ ok: true });
+    }
     if (url.pathname.startsWith('/api/assistant/mail/')) {
       if (control.mailHandler && await control.mailHandler({ route, req, url, json })) return;
       const preview = url.pathname.match(/^\/api\/assistant\/mail\/([^/]+)\/draft-intent$/);
@@ -591,3 +595,164 @@ test('a deep-link target disappearing after snapshot lookup never falls back to 
   assert.ok(!f.requests.some((row) => row.path === '/api/assistant/conversations/recent-other'));
   assert.doesNotMatch(await f.mainText(), /Wrong chat/);
 });
+
+function backgroundSnapshot() {
+  const data = snapshot(); data.user.private_space = 'private';
+  const followup = (title, space, status) => ({ id: title.toLowerCase().replaceAll(' ', '-'), space_id: space, owner_id: 'user-matt', title,
+    instruction: 'Check synthetic inbox', reason: 'A bounded demo follow-up', stop_condition: 'After one check',
+    status, next_check_at: Date.now() + 60000, expires_at: Date.now() + 3600000, remaining_checks: 1,
+    revision: 1, event_kind: '', event_resource: '' });
+  data.responsibilities = [followup('Private active follow-up', 'private', 'active'),
+    followup('Private paused follow-up', 'private', 'paused'), followup('Shared follow-up', 'shared', 'active')];
+  data.approvals = [{ id: 'approval-private', space_id: 'private', status: 'pending', capability: 'Private approval',
+    arguments: '{"resource":"PRIVATE ARGUMENT"}', expires_at: Date.now() + 3600000 }];
+  data.conversations = [{ id: 'private-chat', space_id: 'private', title: 'Private chat', updated_at: 1 },
+    { id: 'shared-chat', space_id: 'shared', title: 'Shared chat', updated_at: 1 }];
+  data.jobs = []; data.preferences = []; data.notices = [];
+  return data;
+}
+
+test('Background clears old controls during a delayed workspace load and preserves quick chat drafts', async (t) => {
+  const f = await fixture(t, { data: backgroundSnapshot(), assistant: true, hash: '#/assistant/background' });
+  await f.page.getByRole('button', { name: 'Resume', exact: true }).waitFor();
+  await f.page.getByRole('button', { name: 'Open quick chat', exact: true }).click();
+  await f.page.locator('#assistant-quick').getByRole('heading', { name: 'Private chat', exact: true }).waitFor();
+  await f.page.getByLabel('Message your assistant', { exact: true }).fill('PRIVATE UNSENT DRAFT');
+  await f.page.evaluate(() => { window.oldBackgroundControls = [...document.querySelectorAll('#main [data-operation]')]; });
+  const held = await f.control.holdNextSnapshot();
+  await f.page.getByLabel('Assistant workspace', { exact: true }).selectOption('shared'); await held.started;
+  assert.match(await f.mainText(), /Loading background work/);
+  assert.doesNotMatch(await f.mainText(), /Private active|Private paused|PRIVATE ARGUMENT|Private approval/);
+  assert.equal(await f.page.locator('#main [data-operation]').count(), 0);
+  await f.page.evaluate(() => window.oldBackgroundControls.forEach((button) => button.click()));
+  assert.equal(f.requests.filter((row) => row.method === 'POST').length, 0);
+  await releaseAndSettle(f.page, held);
+  await f.page.getByRole('heading', { name: 'Shared follow-up', exact: true }).waitFor();
+  assert.equal(await f.page.getByRole('button', { name: 'Resume', exact: true }).count(), 0);
+  assert.equal(await f.page.getByLabel('Quick chat workspace', { exact: true }).inputValue(), 'shared');
+  assert.equal(await f.page.getByLabel('Message your assistant', { exact: true }).inputValue(), '');
+  await f.page.evaluate(() => window.oldBackgroundControls.forEach((button) => button.click()));
+  assert.equal(f.requests.filter((row) => row.method === 'POST').length, 0);
+  await f.page.getByLabel('Quick chat workspace', { exact: true }).selectOption('private');
+  await f.page.getByRole('button', { name: 'Resume', exact: true }).waitFor();
+  assert.equal(await f.page.getByLabel('Message your assistant', { exact: true }).inputValue(), 'PRIVATE UNSENT DRAFT');
+  assert.equal(await f.page.getByLabel('Assistant workspace', { exact: true }).inputValue(), 'private');
+});
+
+test('a delayed old Background snapshot cannot repopulate controls while the new scope is loading', async (t) => {
+  const f = await fixture(t, { data: backgroundSnapshot(), assistant: true, hash: '#/assistant/background' });
+  await f.page.getByRole('button', { name: 'Resume', exact: true }).waitFor();
+  const old = await f.control.holdNextSnapshot(); await old.started; // The existing single poller starts this read.
+  await f.page.getByLabel('Assistant workspace', { exact: true }).selectOption('shared');
+  const fresh = await f.control.holdNextSnapshot();
+  const stale = backgroundSnapshot(); stale.responsibilities.forEach((row) => { row.title = 'STALE RESPONSE ' + row.title; });
+  await releaseAndSettle(f.page, old, stale); await fresh.started;
+  assert.match(await f.mainText(), /Loading background work/);
+  assert.doesNotMatch(await f.mainText(), /STALE RESPONSE|Private active|Private paused/);
+  assert.equal(await f.page.locator('#main [data-operation]').count(), 0);
+  await releaseAndSettle(f.page, fresh);
+  await f.page.getByRole('heading', { name: 'Shared follow-up', exact: true }).waitFor();
+  assert.doesNotMatch(await f.mainText(), /STALE RESPONSE|Private active|Private paused/);
+  assert.equal(f.requests.filter((row) => row.method === 'POST').length, 0);
+});
+
+for (const responseCode of [200, 409]) {
+  test('late Background control response ' + responseCode + ' cannot affect a different workspace', async (t) => {
+    const f = await fixture(t, { data: backgroundSnapshot(), assistant: true, hash: '#/assistant/background' });
+    await f.page.getByRole('button', { name: 'Resume', exact: true }).waitFor();
+    let start, release;
+    const started = new Promise((resolve) => { start = resolve; }), wait = new Promise((resolve) => { release = resolve; });
+    f.control.backgroundHandler = async ({ json }) => { start(); await wait; await json(responseCode === 200 ? { ok: true } : { error: 'OLD PRIVATE CONTROL ERROR' }, responseCode); return true; };
+    await f.page.getByRole('button', { name: 'Pause', exact: true }).click(); await started;
+    await f.page.getByLabel('Assistant workspace', { exact: true }).selectOption('shared');
+    await f.page.getByRole('heading', { name: 'Shared follow-up', exact: true }).waitFor();
+    await f.page.getByLabel('Assistant workspace', { exact: true }).focus();
+    const acknowledged = f.page.waitForResponse((response) => response.url().includes('/responsibilities/') && response.status() === responseCode);
+    release(); await (await acknowledged).finished();
+    await f.page.evaluate(() => new Promise((resolve) => requestAnimationFrame(resolve)));
+    assert.doesNotMatch(await f.mainText(), /Saved\.|OLD PRIVATE CONTROL ERROR|Private active|Private paused/);
+    assert.equal(await f.page.getByRole('button', { name: 'Pause', exact: true }).isEnabled(), true);
+    assert.equal(await f.page.evaluate(() => document.activeElement?.getAttribute('aria-label')), 'Assistant workspace');
+    const actions = f.requests.filter((row) => row.method === 'POST');
+    assert.equal(actions.length, 1); assert.deepEqual(actions[0].body, { status: 'paused', revision: 1 });
+  });
+}
+
+test('a Background action completing after cross-tab sign-in invalidation cannot restore old controls', async (t) => {
+  const f = await fixture(t, { data: backgroundSnapshot(), assistant: true, hash: '#/assistant/background' });
+  await f.page.getByRole('button', { name: 'Resume', exact: true }).waitFor();
+  let start, release;
+  const started = new Promise((resolve) => { start = resolve; }), wait = new Promise((resolve) => { release = resolve; });
+  f.control.backgroundHandler = async ({ json }) => { start(); await wait; await json({ ok: true }); return true; };
+  await f.page.getByRole('button', { name: 'Resume', exact: true }).click(); await started;
+  const other = await f.context.newPage(); await other.goto(ORIGIN + '/notice');
+  await other.evaluate(() => { const channel = new BroadcastChannel('family-hub-session'); channel.postMessage('changed'); channel.close(); });
+  await f.page.getByRole('heading', { name: 'Your sign-in changed' }).waitFor();
+  const acknowledged = f.page.waitForResponse((response) => response.url().includes('/responsibilities/'));
+  release(); await (await acknowledged).finished();
+  await f.page.evaluate(() => new Promise((resolve) => requestAnimationFrame(resolve)));
+  assert.doesNotMatch(await f.mainText(), /Saved\.|Private active|Private paused|PRIVATE ARGUMENT/);
+  assert.equal(await f.page.locator('#main [data-operation]').count(), 0);
+  assert.equal(f.requests.filter((row) => row.method === 'POST').length, 1);
+});
+
+test('Background ignores a returning old action and refreshes its pending control after a scope round trip', async (t) => {
+  const f = await fixture(t, { data: backgroundSnapshot(), assistant: true, hash: '#/assistant/background' });
+  await f.page.getByRole('button', { name: 'Resume', exact: true }).waitFor();
+  let start, release;
+  const started = new Promise((resolve) => { start = resolve; }), wait = new Promise((resolve) => { release = resolve; });
+  f.control.backgroundHandler = async ({ json }) => { start(); await wait; await json({ error: 'STALE ROUND TRIP ERROR' }, 409); return true; };
+  await f.page.getByRole('button', { name: 'Pause', exact: true }).click(); await started;
+  await f.page.getByLabel('Assistant workspace', { exact: true }).selectOption('shared');
+  await f.page.getByRole('heading', { name: 'Shared follow-up', exact: true }).waitFor();
+  await f.page.getByLabel('Assistant workspace', { exact: true }).selectOption('private');
+  await f.page.getByRole('heading', { name: 'Private active follow-up', exact: true }).waitFor();
+  assert.equal(await f.page.getByRole('button', { name: 'Pause', exact: true }).isDisabled(), true);
+  const acknowledged = f.page.waitForResponse((response) => response.url().includes('/responsibilities/'));
+  release(); await (await acknowledged).finished();
+  await f.page.waitForFunction(() => [...document.querySelectorAll('#main button')].some((button) => button.textContent === 'Pause' && !button.disabled));
+  assert.doesNotMatch(await f.mainText(), /STALE ROUND TRIP ERROR|Saved\./);
+  assert.equal(f.requests.filter((row) => row.method === 'POST').length, 1);
+});
+
+test('a delayed quick-chat read cannot redraw old Background data after a workspace change', async (t) => {
+  const f = await fixture(t, { data: backgroundSnapshot(), assistant: true, hash: '#/assistant/background' });
+  await f.page.getByRole('button', { name: 'Resume', exact: true }).waitFor();
+  await f.page.getByRole('button', { name: 'Open quick chat', exact: true }).click();
+  await f.page.locator('#assistant-quick').getByRole('heading', { name: 'Private chat', exact: true }).waitFor();
+  let start, release;
+  const started = new Promise((resolve) => { start = resolve; }), wait = new Promise((resolve) => { release = resolve; });
+  f.control.chatHandler = async ({ id, json }) => {
+    if (id !== 'private-chat') return false;
+    start(); await wait;
+    await json({ conversation: f.control.data.conversations[0], messages: [{ id: 'late', role: 'assistant', text: 'LATE PRIVATE CHAT', status: 'complete' }], active_job: null }); return true;
+  };
+  await started; // Polling has loaded its snapshot and is now waiting for chat.
+  await f.page.getByLabel('Assistant workspace', { exact: true }).selectOption('shared');
+  const fresh = await f.control.holdNextSnapshot();
+  release(); await fresh.started;
+  assert.match(await f.mainText(), /Loading background work/);
+  assert.equal(await f.page.locator('#main [data-operation]').count(), 0);
+  assert.doesNotMatch(await f.page.locator('body').innerText(), /Private active|Private paused|LATE PRIVATE CHAT/);
+  await releaseAndSettle(f.page, fresh);
+  await f.page.getByRole('heading', { name: 'Shared follow-up', exact: true }).waitFor();
+  assert.doesNotMatch(await f.page.locator('body').innerText(), /LATE PRIVATE CHAT/);
+});
+
+for (const tab of ['memory', 'activity']) {
+  test(tab + ' clears private text immediately while a shared-workspace read is delayed', async (t) => {
+    const data = backgroundSnapshot();
+    data.preferences = [{ id: 'private-preference', text: 'PRIVATE PREFERENCE TEXT', created_at: 1700000000000 }];
+    data.notices = [{ id: 'private-notice', space_id: 'private', title: 'Private notice', body: 'PRIVATE ACTIVITY TEXT', created_at: 1700000000000 },
+      { id: 'shared-notice', space_id: 'shared', title: 'Household notice', body: 'SHARED ACTIVITY TEXT', created_at: 1700000000000 }];
+    const f = await fixture(t, { data, assistant: true, hash: '#/assistant/' + tab });
+    await f.page.getByText(tab === 'memory' ? 'PRIVATE PREFERENCE TEXT' : 'PRIVATE ACTIVITY TEXT', { exact: true }).waitFor();
+    const held = await f.control.holdNextSnapshot();
+    await f.page.getByLabel('Assistant workspace', { exact: true }).selectOption('shared'); await held.started;
+    assert.match(await f.mainText(), new RegExp('Loading ' + tab + ' for this workspace'));
+    assert.doesNotMatch(await f.mainText(), /PRIVATE PREFERENCE TEXT|PRIVATE ACTIVITY TEXT|Private notice/);
+    await releaseAndSettle(f.page, held);
+    await f.page.getByText(tab === 'memory' ? 'Private memories appear only in your private workspace.' : 'SHARED ACTIVITY TEXT', { exact: true }).waitFor();
+    assert.doesNotMatch(await f.mainText(), /PRIVATE PREFERENCE TEXT|PRIVATE ACTIVITY TEXT|Private notice/);
+  });
+}

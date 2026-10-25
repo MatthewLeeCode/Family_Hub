@@ -118,7 +118,7 @@ const AssistantUI = (() => {
       this.context = familyContext;
       this.quickOnly = quickOnly; this.quickFrame = null; this.quickBody = null; this.scopeSelectors = [];
       this.alive = true; this.timer = null; this.snapshot = null; this.scope = selectedScope; this.selected = ''; this.chat = null;
-      this.selectionVersion = 0; this.stateVersion = 0; this.refreshing = null; this.switching = false; this.pending = new Set(); this.transcriptNodes = new Map();
+      this.selectionVersion = 0; this.stateVersion = 0; this.scopeVersion = 0; this.refreshing = null; this.switching = false; this.pending = new Set(); this.transcriptNodes = new Map();
       this.connectionRows = []; this.connectionsScope = null; this.connectionsSignature = ''; this.connectionsNeedsReload = false;
       this.root = el('div', { class: 'assistant-view' });
       this.notice = el('p', { class: 'assistant-notice small', role: 'status', 'aria-live': 'polite' });
@@ -301,6 +301,7 @@ const AssistantUI = (() => {
           this.updateComposer();
           await this.loadChat();
         }
+        if (!this.live() || version !== this.stateVersion) return;
         if (this.tab === 'permissions') await this.loadGrants();
         else if (this.tab === 'connections') await this.loadConnections();
         else if (this.tab !== 'chat') this.renderBackground();
@@ -502,19 +503,23 @@ const AssistantUI = (() => {
         this.pending.delete('send'); if (this.live()) { this.updateComposer(); this.composer?.focus({ preventScroll: true }); }
       }
     }
-    async act(key, path, body, button) {
+    async act(key, path, body, button, scope = this.scope, scopeVersion = this.scopeVersion) {
       const operation = key.replace(/^(allow|deny)-/, 'approval-').replace(/^(pause|cancel)-/, 'responsibility-');
-      if (this.pending.has(operation)) return;
+      const owner = identityKey(), context = this.context;
+      const current = () => this.live() && identityKey() === owner && context === familyContext &&
+        this.scope === scope && this.scopeVersion === scopeVersion;
+      if (!current() || this.switching || !button.isConnected || this.pending.has(operation)) return;
       const hadFocus = document.activeElement === button;
       this.pending.add(operation); this.stateVersion++; button.disabled = true;
       for (const sibling of this.root.querySelectorAll('[data-operation]')) if (sibling.dataset.operation === operation) sibling.disabled = true;
       try {
         await this.request('POST', path, body); this.pending.delete(operation);
+        if (!current()) return;
         this.announce('Saved.'); this.backgroundSignature = ''; await this.refresh();
-      } catch (error) { this.error(error); }
+      } catch (error) { if (current()) this.error(error); }
       finally {
         this.pending.delete(operation);
-        if (this.live()) {
+        if (current()) {
           button.disabled = false;
           for (const sibling of this.root.querySelectorAll('[data-operation]')) if (sibling.dataset.operation === operation) sibling.disabled = false;
           if (hadFocus && (!document.activeElement || document.activeElement === document.body)) {
@@ -526,12 +531,19 @@ const AssistantUI = (() => {
     }
     action(label, key, path, body, cls = 'btn') {
       const operation = key.replace(/^(allow|deny)-/, 'approval-').replace(/^(pause|cancel)-/, 'responsibility-');
+      const scope = this.scope, scopeVersion = this.scopeVersion;
       const button = el('button', { class: cls, type: 'button', text: label, 'data-focus-key': key,
-        'data-operation': operation, disabled: this.pending.has(operation), onclick: () => this.act(key, path, body, button) });
+        'data-operation': operation, disabled: this.pending.has(operation), onclick: () => this.act(key, path, body, button, scope, scopeVersion) });
       return button;
     }
     clearScopedControls() {
-      if (this.tab === 'permissions') {
+      this.scopeVersion++;
+      if (['background', 'memory', 'activity'].includes(this.tab)) {
+        this.backgroundSignature = '';
+        this.announce('');
+        const label = this.tab === 'background' ? 'background work' : this.tab;
+        fill(this.body, paragraph('Loading ' + label + ' for this workspace…', 'small dim'));
+      } else if (this.tab === 'permissions') {
         this.grantsScope = null;
         fill(this.body, paragraph('Loading permissions for this workspace…', 'small dim'));
       } else if (this.tab === 'connections') {
@@ -774,7 +786,7 @@ const AssistantUI = (() => {
       const snapshot = this.snapshot;
       const scoped = (name) => list(snapshot[name]).filter((row) => row.space_id === this.scope);
       const signature = JSON.stringify([this.tab, this.scope, snapshot.approvals, snapshot.responsibilities, snapshot.jobs, snapshot.preferences, snapshot.notices,
-        list(snapshot.approvals).map((a) => a.expires_at <= Date.now())]);
+        list(snapshot.approvals).map((a) => a.expires_at <= Date.now()), Array.from(this.pending)]);
       if (signature === this.backgroundSignature) return;
       this.backgroundSignature = signature;
       if (this.tab === 'memory') {
