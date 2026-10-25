@@ -53,6 +53,10 @@ drafts. Notes uses a separate Rust domain service with private/shared workspaces
 The household's existing appearance remains the default; each signed-in profile
 can select its own colours and Family, Quiet or Compact layout.
 
+Explicitly enrolled local profiles can use one account password for Family Hub
+and Assistant. See [single sign-in setup](docs/assistant-authentication.md).
+Unconfigured installations retain the earlier manual connection flow.
+
 See the [assistant interface](docs/assistant-interface.md),
 [Inbox interface](docs/inbox-interface.md) and
 [Notes setup](docs/notes-domain.md) for the contracts and current limits. Real

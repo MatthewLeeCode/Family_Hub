@@ -18,7 +18,7 @@ from flask import Blueprint, Response, current_app, jsonify, request, send_file,
 from werkzeug.security import check_password_hash, generate_password_hash
 
 from . import bookfix, calibre, catalogues, covers, db, devices, duplicates, goodreads, integrations, kinds, kosync, looks, media, mediasort, readers, recommend, secondcopy, series, settings
-from . import secure_sessions
+from . import secure_sessions, assistant_identity
 
 bp = Blueprint("api", __name__, url_prefix="/api")
 
@@ -114,19 +114,29 @@ def on_home_network():
 _attempts_lock = threading.Lock()
 
 
-def check_passcode(profile, passcode):
-    """True if the passcode is right. Locks a profile briefly after repeated misses."""
+def begin_login_attempt(profile):
     attempts = hub().attempts
     # Each try is counted before the (slow) check, so tries sent side by side cannot all slip under the limit.
     with _attempts_lock:
         entry = attempts.get(profile["id"], [0, 0])
         if entry[0] >= MAX_TRIES and time.time() - entry[1] < LOCK_SECONDS:
-            return None
+            return False
         count = entry[0] + 1 if time.time() - entry[1] < LOCK_SECONDS else 1
         attempts[profile["id"]] = [count, time.time()]
+    return True
+
+
+def finish_login_attempt(profile):
+    with _attempts_lock:
+        hub().attempts.pop(profile["id"], None)
+
+
+def check_passcode(profile, passcode):
+    """True if the passcode is right. Locks a profile briefly after repeated misses."""
+    if not begin_login_attempt(profile):
+        return None
     if profile["passcode_hash"] and check_password_hash(profile["passcode_hash"], str(passcode or "")):
-        with _attempts_lock:
-            attempts.pop(profile["id"], None)
+        finish_login_attempt(profile)
         return True
     return False
 
@@ -181,6 +191,7 @@ def public_profile(p, full=False, blocked=None):
     data = {
         "id": p["id"], "name": p["name"], "role": p["role"], "color": p["color"],
         "has_passcode": bool(p["passcode_hash"]), "can_request": bool(p["can_request"]),
+        "sign_in_method": "account" if assistant_identity.binding(p["id"]) else "passcode",
         "can_tag": bool(p["can_tag"]), "tracker_linked": bool(p["hardcover_token"]),
         "can_series": can_series(p, blocked),
         "can_request_media": can_request_media(p),
@@ -253,6 +264,16 @@ def login():
     target = h.profile(data.get("profile_id") or 0)
     if not target:
         return fail("That profile does not exist.", 404)
+
+    if assistant_identity.binding(target["id"]):
+        if set(data) != {"profile_id", "passcode"}:
+            return fail("Sign in to this profile with its account password.", 403)
+        if not begin_login_attempt(target):
+            return fail("Too many wrong tries. Wait a minute and try again.", 429)
+        result = assistant_identity.sign_in(target, data.get("passcode"))
+        if getattr(result, "status_code", None) == 200:
+            finish_login_attempt(target)
+        return result
 
     via_admin = False
     if data.get("admin_id"):
@@ -338,9 +359,6 @@ def update_profile(who, profile_id):
             sets.append("name=?")
             args.append(db.clean_tag(data["name"]))
         if "role" in data and data["role"] in ("admin", "member"):
-            admins = [p for p in h.profiles() if p["role"] == "admin"]
-            if data["role"] == "member" and target["role"] == "admin" and len(admins) <= 1:
-                return fail("There has to be at least one admin.")
             sets.append("role=?")
             args.append(data["role"])
         for flag in ("can_request", "can_tag"):
@@ -356,8 +374,22 @@ def update_profile(who, profile_id):
     if sets:
         con = h.con()
         try:
+            if not con.in_transaction:
+                con.execute("BEGIN IMMEDIATE")
+            current = con.execute("SELECT role FROM profiles WHERE id=?", (profile_id,)).fetchone()
+            if current is None:
+                con.rollback()
+                return fail("That profile does not exist.", 404)
+            role_changed = "role=?" in sets and data["role"] != current["role"]
+            if role_changed and data["role"] == "member" and con.execute(
+                    "SELECT COUNT(*) FROM profiles WHERE role='admin'").fetchone()[0] <= 1:
+                con.rollback()
+                return fail("There has to be at least one admin.")
             con.execute("UPDATE profiles SET %s WHERE id=?" % ", ".join(sets), (*args, profile_id))
+            if "passcode_hash=?" in sets or role_changed:
+                secure_sessions.retire_profile_sessions(con, profile_id)
         except Exception:
+            con.rollback()
             return fail("There is already a profile with that name.", 409)
         con.commit()
     return jsonify({"ok": True})
@@ -383,6 +415,7 @@ def delete_profile(who, profile_id):
     if profile_id in allowed:  # nothing left behind in the films and TV permission list
         db.kv_set(con, MEDIA_KEY, json.dumps(sorted(allowed - {profile_id})))
     con.execute("DELETE FROM profiles WHERE id=?", (profile_id,))
+    secure_sessions.retire_profile_sessions(con, profile_id)
     con.commit()
     return jsonify({"ok": True})
 

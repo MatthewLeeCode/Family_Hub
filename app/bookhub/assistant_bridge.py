@@ -15,7 +15,7 @@ from flask import Blueprint, current_app, jsonify, make_response, request, sessi
 from .api import fail, profile_only
 from .secure_sessions import rotate_session, view_context
 from . import assistant_mail_contract as mail_contract
-from . import assistant_responsibility_contract as responsibility_contract
+from . import assistant_responsibility_contract as responsibility_contract, assistant_identity
 
 bp = Blueprint("assistant_bridge", __name__, url_prefix="/api/assistant")
 
@@ -120,6 +120,12 @@ def status(who):
     denied = usable_profile()
     if denied:
         return denied
+    if assistant_identity.configured():
+        enrolled = assistant_identity.binding(who["id"])
+        return jsonify({"configured": bool(current_app.hub.config.assistant_core_url),
+                        "signed_in": bool(session.get("assistant_token")),
+                        "user": session.get("assistant_user"), "sign_in_mode": "family",
+                        "linked": enrolled is not None})
     return jsonify({"configured": bool(current_app.hub.config.assistant_core_url),
                     "signed_in": bool(session.get("assistant_token")),
                     "user": session.get("assistant_user")})
@@ -131,6 +137,8 @@ def login(who):
     denied = usable_profile()
     if denied:
         return denied
+    if assistant_identity.configured():
+        return fail("Sign in through your Family Hub profile to use the assistant.", 403)
     data = request.get_json(silent=True)
     if not isinstance(data, dict) or set(data) != {"login", "password"} or not all(isinstance(v, str) and 0 < len(v) <= 1024 for v in data.values()):
         return fail("Enter your assistant account and password.")
@@ -169,6 +177,8 @@ def logout(who):
     if denied:
         return denied
     revocation = disconnect()
+    if assistant_identity.configured():
+        session.clear()
     return jsonify({"ok": True, "context": view_context(), "core_revocation": revocation})
 
 

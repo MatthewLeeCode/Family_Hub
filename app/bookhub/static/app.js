@@ -1139,8 +1139,11 @@ function pageProfiles() {
   function ask(p, door) {
     if (chosen) chosen.setAttribute('aria-pressed', 'false');
     chosen = door; door.setAttribute('aria-pressed', 'true');
-    const pass = el('input', { type: 'password', autocomplete: 'off', style: 'font:400 30px/1 var(--font-num);letter-spacing:.5em;min-height:52px' });
-    const admins = S.profiles.filter((a) => a.role === 'admin' && a.id !== p.id);
+    const account = p.sign_in_method === 'account';
+    const credentialLabel = account ? 'Password' : 'Passcode';
+    const pass = el('input', { type: 'password', autocomplete: account ? 'current-password' : 'off',
+      style: account ? 'min-height:48px' : 'font:400 30px/1 var(--font-num);letter-spacing:.5em;min-height:52px' });
+    const admins = account ? [] : S.profiles.filter((a) => a.role === 'admin' && a.id !== p.id);
     const adminSel = el('select', {}, admins.map((a) => el('option', { value: a.id, text: a.name })));
     const adminPass = el('input', { type: 'password', autocomplete: 'off' });
     const override = el('div', { class: 'stack', hidden: true },
@@ -1149,18 +1152,19 @@ function pageProfiles() {
         el('button', { class: 'btn', type: 'button', text: 'Open as admin', onclick: async () => { if (!await enter({ profile_id: p.id, admin_id: Number(adminSel.value), admin_passcode: adminPass.value })) adminPass.select(); } })));
     // Cancel (or Escape) closes the box and puts focus back on the door that opened it.
     const cancel = () => { door.setAttribute('aria-pressed', 'false'); chosen = null; fill(panel); door.focus(); };
-    fill(panel, el('form', { class: 'panel cut focus', 'aria-label': 'Enter passcode for ' + p.name,
+    fill(panel, el('form', { class: 'panel cut focus', 'aria-label': 'Enter ' + credentialLabel.toLowerCase() + ' for ' + p.name,
       onkeydown: (e) => { if (e.key === 'Escape') { e.preventDefault(); cancel(); } },
       // A wrong passcode stays selected, so typing again replaces it.
       onsubmit: async (e) => { e.preventDefault(); if (!await enter({ profile_id: p.id, passcode: pass.value })) pass.select(); } },
-      head('Passcode for ' + p.name, el('span', { class: 'small dim', text: 'Locked' })),
-      field('Passcode', pass, 'wide'),
+      head(credentialLabel + ' for ' + p.name, el('span', { class: 'small dim', text: account ? 'One sign-in' : 'Locked' })),
+      account ? el('p', { class: 'small dim', text: 'Use your account password for Family Hub and your assistant.' }) : null,
+      field(credentialLabel, pass, 'wide'),
       el('div', { class: 'row' },
-        el('button', { class: 'btn pri', type: 'submit', style: 'flex:1 1 140px', text: 'Unlock' }),
+        el('button', { class: 'btn pri', type: 'submit', style: 'flex:1 1 140px', text: account ? 'Sign in' : 'Unlock' }),
         el('button', { class: 'btn', type: 'button', style: 'flex:1 1 100px', text: 'Cancel', onclick: cancel })),
       admins.length ? el('div', { class: 'line between' }, el('span', { class: 'small dim grow', text: 'Forgotten it? An admin can open this profile or reset the passcode.' }),
         el('button', { type: 'button', class: 'btn line2', text: 'Admin override', onclick: () => { override.hidden = false; adminPass.focus(); } })) : null,
-      override));
+      account ? null : override));
     pass.focus();
   }
   const doors = S.profiles.map((p, i) => {
@@ -1168,10 +1172,10 @@ function pageProfiles() {
       el('span', { class: 'glass glow', 'aria-hidden': 'true', text: p.name[0].toUpperCase() }),
       el('span', { class: 'name', text: p.name }),
       el('span', { class: 'tag' + (p.role === 'admin' ? ' on' : ''), text: p.role === 'admin' ? 'Admin' : 'Member' }),
-      el('span', { class: 'small dim', text: p.has_passcode ? 'Passcode on' : 'No passcode' }),
+      el('span', { class: 'small dim', text: p.sign_in_method === 'account' ? 'Account sign-in' : p.has_passcode ? 'Passcode on' : 'No passcode' }),
       // Admins can always find new books, whatever their own switch says, so they are never "Reading only".
       p.tracker_linked ? el('span', { class: 'small dim', text: 'Kindle tracking linked' }) : (p.can_request || p.role === 'admin' ? null : el('span', { class: 'small dim', text: 'Reading only' })));
-    door.addEventListener('click', () => (p.has_passcode ? ask(p, door) : enter({ profile_id: p.id })));
+    door.addEventListener('click', () => (p.has_passcode || p.sign_in_method === 'account' ? ask(p, door) : enter({ profile_id: p.id })));
     return door;
   });
   if (S.guest_enabled) doors.push(el('button', { class: 'door', type: 'button', style: '--tone:var(--dim)', onclick: () => enter({ guest: true }) },

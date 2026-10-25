@@ -54,7 +54,7 @@ function snapshot() {
   };
 }
 
-async function fixture(t, { profile = {}, status = {}, data = snapshot(), hash = '#/inbox', viewport, assistant = false } = {}) {
+async function fixture(t, { profile = {}, family = {}, status = {}, data = snapshot(), hash = '#/inbox', viewport, assistant = false } = {}) {
   const context = await browser.newContext({ ...(viewport ? { viewport } : {}), serviceWorkers: 'block' });
   t.after(async () => { await context.close(); });
   const requests = [], unexpected = [], errors = [];
@@ -76,6 +76,7 @@ async function fixture(t, { profile = {}, status = {}, data = snapshot(), hash =
     me: { id: 1, name: 'Matt', role: 'member', guest: false, via_admin: false, ...profile },
     assistant_context: CONTEXT, setup_needed: false, series: false, kinds: [],
     look: { design: 'minimalist', theme: 'dark', layout: 'compact', accent: null, fonts: '/fixture/empty.css', sep: ' / ', transition: false },
+    ...family,
   };
   const html = source('index.html')
     .replaceAll('__DESIGN__', 'minimalist').replaceAll('__THEME__', 'dark')
@@ -103,6 +104,7 @@ async function fixture(t, { profile = {}, status = {}, data = snapshot(), hash =
       return json({ ok: true, context: 'b'.repeat(64), core_revocation: control.revocation });
     }
     if (url.pathname === '/api/logout' && req.method() === 'POST') return json({ ok: true, core_revocation: control.revocation });
+    if (url.pathname === '/api/login' && req.method() === 'POST') return json({ error: 'Sign-in failed', core_revocation: control.revocation }, 401);
     if (url.pathname === '/api/assistant/login' && req.method() === 'POST') return json({ error: 'Sign-in failed', context: 'b'.repeat(64), core_revocation: control.revocation }, 401);
     const resumeReview = url.pathname.match(/^\/api\/assistant\/responsibilities\/([^/]+)\/resume-review$/);
     if (resumeReview && req.method() === 'GET') {
@@ -150,13 +152,13 @@ async function fixture(t, { profile = {}, status = {}, data = snapshot(), hash =
   const page = await context.newPage(); page.on('pageerror', (error) => errors.push(error.message));
   await page.goto(ORIGIN + '/' + hash);
   t.after(() => { assert.deepEqual(errors, [], 'unexpected browser script errors'); assert.deepEqual(unexpected, [], 'all network requests must be explicitly mocked'); });
-  return { ...control, control, page, context, async ready() { await page.locator('.inbox-message').first().waitFor(); },
+  return { ...control, control, page, context, familyState, async ready() { await page.locator('.inbox-message').first().waitFor(); },
     async mainText() { return page.locator('#main').innerText(); } };
 }
 
-async function releaseAndSettle(page, held, body) {
+async function releaseAndSettle(page, held, body, code = 200) {
   const response = page.waitForResponse((res) => res.url() === ORIGIN + '/api/assistant/state');
-  held.release(body);
+  held.release(body, code);
   await (await response).finished();
   // Let the real api() parse/check the response and its caller finish rendering.
   await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => resolve())));
@@ -644,6 +646,156 @@ function backgroundSnapshot() {
   data.jobs = []; data.preferences = []; data.notices = [];
   return data;
 }
+
+for (const mode of ['main', 'quick']) test('family sign-in ' + mode + ' uses the connected profile without a second account form', async (t) => {
+  const f = await fixture(t, { data: backgroundSnapshot(), assistant: true, hash: mode === 'main' ? '#/assistant' : '#/photos',
+    status: { sign_in_mode: 'family', linked: true } });
+  if (mode === 'quick') await f.page.getByRole('button', { name: 'Open quick chat', exact: true }).click();
+  await f.page.getByText('Connected as Matt · Family Hub profile', { exact: true }).waitFor();
+  assert.equal(await f.page.locator('.assistant-view input[type="password"]').count(), 0);
+  assert.equal(await f.page.getByRole('button', { name: 'Disconnect account', exact: true }).count(), 0);
+  assert.equal(await f.page.getByLabel('Message your assistant', { exact: true }).isEnabled(), true);
+  assert.equal(f.requests.filter((row) => row.method === 'POST').length, 0);
+});
+
+test('family sign-in directs an expired linked profile to Family Hub and an unlinked profile to setup', async (t) => {
+  for (const linked of [true, false]) {
+    const f = await fixture(t, { data: backgroundSnapshot(), assistant: true, hash: '#/assistant',
+      status: { sign_in_mode: 'family', signed_in: false, linked } });
+    await f.page.getByRole('heading', { name: linked ? 'Sign in to Family Hub' : 'Assistant setup needed', exact: true }).waitFor();
+    assert.equal(await f.page.locator('.assistant-view input').count(), 0);
+    const link = f.page.getByRole('link', { name: 'Sign in to Family Hub', exact: true });
+    if (linked) assert.equal(await link.getAttribute('href'), '#/profiles'); else assert.equal(await link.count(), 0);
+    assert.equal(f.requests.filter((row) => row.path === '/api/assistant/state' || row.method === 'POST').length, 0);
+  }
+});
+
+test('family sign-in clears chat and draft after a core 401 without offering assistant credentials', async (t) => {
+  const f = await fixture(t, { data: backgroundSnapshot(), assistant: true, hash: '#/assistant', status: { sign_in_mode: 'family', linked: true } });
+  await f.page.getByLabel('Message your assistant').fill('PRIVATE UNSENT DRAFT');
+  const held = await f.control.holdNextSnapshot(); await held.started;
+  await releaseAndSettle(f.page, held, { error: 'Session ended' }, 401);
+  await f.page.getByRole('heading', { name: 'Your sign-in changed', exact: true }).waitFor();
+  assert.equal(await f.page.getByRole('link', { name: 'Sign in to Family Hub', exact: true }).getAttribute('href'), '#/profiles');
+  assert.doesNotMatch(await f.mainText(), /PRIVATE UNSENT DRAFT|Private approval|Private chat/);
+  assert.equal(await f.page.locator('.assistant-view input[type="password"]').count(), 0);
+  assert.equal(await f.page.locator('.assistant-view textarea').count(), 0);
+  assert.equal(f.requests.filter((row) => row.method === 'POST').length, 0);
+});
+
+test('family sign-in does not downgrade an unverified mode to the manual credentials form', async (t) => {
+  for (const status of [{ sign_in_mode: 'family', linked: 'yes' }, { sign_in_mode: 'unknown' }]) {
+    const f = await fixture(t, { assistant: true, hash: '#/assistant', status: { signed_in: false, ...status } });
+    await f.page.getByText('The sign-in status could not be verified. Reload Family Hub.', { exact: true }).waitFor();
+    assert.equal(await f.page.locator('input[type="password"]').count(), 0);
+    assert.equal(f.requests.filter((row) => row.method === 'POST').length, 0);
+  }
+});
+
+test('family sign-in closes an expired quick chat when opening the profile sign-in screen', async (t) => {
+  const f = await fixture(t, { data: backgroundSnapshot(), assistant: true, hash: '#/photos', status: { sign_in_mode: 'family', linked: true } });
+  await f.page.getByRole('button', { name: 'Open quick chat', exact: true }).click();
+  await f.page.getByLabel('Message your assistant').fill('PRIVATE QUICK DRAFT');
+  const held = await f.control.holdNextSnapshot(); await held.started;
+  await releaseAndSettle(f.page, held, { error: 'Session ended' }, 401);
+  f.familyState.me = null; f.familyState.profiles = [{ id: 1, name: 'Matt', role: 'member', sign_in_method: 'account', has_passcode: false }];
+  await f.page.getByRole('link', { name: 'Sign in to Family Hub', exact: true }).click();
+  await f.page.getByRole('button', { name: /Matt.*Account sign-in/ }).waitFor();
+  assert.equal(await f.page.locator('#assistant-quick').count(), 0);
+  assert.doesNotMatch(await f.page.locator('body').innerText(), /PRIVATE QUICK DRAFT|Private approval/);
+  assert.equal(f.requests.filter((row) => row.method === 'POST').length, 0);
+});
+
+test('family sign-in leaves the existing manual installation flow available when the mode is absent', async (t) => {
+  const f = await fixture(t, { assistant: true, hash: '#/assistant', status: { signed_in: false } });
+  await f.page.getByRole('heading', { name: 'Your assistant account', exact: true }).waitFor();
+  assert.equal(await f.page.getByLabel('Assistant account', { exact: true }).isVisible(), true);
+  assert.equal(await f.page.getByLabel('Password', { exact: true }).isVisible(), true);
+  assert.equal(await f.page.getByRole('button', { name: 'Sign in to Assistant', exact: true }).isVisible(), true);
+});
+
+test('family sign-in profile doors distinguish account passwords from passcodes without an account override', async (t) => {
+  const profiles = [
+    { id: 1, name: 'Matt', role: 'member', sign_in_method: 'account', has_passcode: false },
+    { id: 2, name: 'Nicky', role: 'member', sign_in_method: 'account', has_passcode: false },
+    { id: 3, name: 'Nan', role: 'member', sign_in_method: 'passcode', has_passcode: true },
+    { id: 4, name: 'Administrator', role: 'admin', sign_in_method: 'passcode', has_passcode: true },
+  ];
+  const f = await fixture(t, { assistant: true, hash: '#/profiles', family: { me: null, profiles } });
+  await f.page.getByRole('button', { name: /Matt.*Account sign-in/ }).click();
+  const form = f.page.getByRole('form', { name: 'Enter password for Matt', exact: true });
+  await form.waitFor();
+  assert.equal(await form.getByLabel('Password', { exact: true }).getAttribute('autocomplete'), 'current-password');
+  assert.equal(await f.page.getByText('Use your account password for Family Hub and your assistant.', { exact: true }).isVisible(), true);
+  assert.equal(await form.getByRole('button', { name: 'Admin override', exact: true }).count(), 0);
+  assert.equal(await form.getByRole('button', { name: 'Open as admin', exact: true }).isVisible(), false);
+  await form.getByLabel('Password', { exact: true }).fill('synthetic-account-password');
+  await form.getByRole('button', { name: 'Sign in', exact: true }).click();
+  await f.page.getByText('Sign-in failed', { exact: true }).waitFor();
+  assert.deepEqual(f.requests.filter((row) => row.path === '/api/login').map((row) => row.body), [{ profile_id: 1, passcode: 'synthetic-account-password' }]);
+  assert.equal(f.requests.filter((row) => row.path === '/api/assistant/login').length, 0);
+  await f.page.getByRole('button', { name: /Nan.*Passcode on/ }).click();
+  const nan = f.page.getByRole('form', { name: 'Enter passcode for Nan', exact: true });
+  await nan.waitFor();
+  assert.equal(await nan.getByLabel('Passcode', { exact: true }).getAttribute('autocomplete'), 'off');
+});
+
+for (const viewport of [{ width: 1265, height: 712 }, { width: 390, height: 844 }]) test('compact chat fits request controls and composer at ' + viewport.width + 'px', async (t) => {
+  const data = backgroundSnapshot(); data.responsibilities = []; data.approvals[0].arguments = '{}';
+  data.conversations.push(...Array.from({ length: 12 }, (_, i) => ({ id: 'older-private-' + i, space_id: 'private', title: 'Earlier conversation ' + (i + 1), updated_at: 0 })));
+  const f = await fixture(t, { data, assistant: true, hash: '#/assistant', viewport, status: { sign_in_mode: 'family', linked: true } });
+  await f.page.getByRole('button', { name: 'Review 1 permission request', exact: true }).click();
+  const output = path.resolve(__dirname, '../.test-runs/compact-chat-sso'); mkdirSync(output, { recursive: true });
+  for (const layout of ['quiet', 'compact', 'family']) {
+    await f.page.evaluate((layout) => { document.documentElement.dataset.layout = layout; }, layout);
+    await f.page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    await f.page.getByRole('button', { name: 'Review 1 permission request', exact: true }).click();
+    const geometry = await f.page.evaluate(() => {
+      const rect = (selector) => { const r = document.querySelector(selector).getBoundingClientRect(); return { top: r.top, bottom: r.bottom, height: r.height }; };
+      const thread = rect('.assistant-transcript'), buttons = rect('.assistant-approval-actions'), composer = rect('.assistant-composer');
+      const conversations = document.querySelector('.assistant-main-conversations .assistant-conversation-list');
+      return { thread, buttons, composer, height: innerHeight, overflow: document.documentElement.scrollHeight - innerHeight,
+        horizontal: document.documentElement.scrollWidth - innerWidth,
+        conversationsBottom: rect('.assistant-main-conversations .assistant-conversations').bottom,
+        conversationsScroll: conversations.scrollHeight > conversations.clientHeight,
+        conversationMinHeight: Math.min(...Array.from(conversations.querySelectorAll('button'), (button) => button.getBoundingClientRect().height)),
+        controls: rect('.assistant-controls'), heading: rect('.assistant-chat-heading'), main: rect('#main'), top: rect('#top'), side: rect('#side') };
+    });
+    await f.page.screenshot({ path: path.join(output, `${viewport.width}-${layout}.png`), fullPage: true });
+    // Compact keeps its existing multi-row global navigation; Quiet and Family have room for a larger thread.
+    assert.ok(geometry.thread.height >= (layout === 'compact' ? 190 : 280), JSON.stringify({ layout, geometry }));
+    assert.ok(geometry.buttons.top >= geometry.thread.top && geometry.buttons.bottom <= geometry.thread.bottom + 1, JSON.stringify({ layout, geometry }));
+    assert.ok(geometry.composer.bottom <= viewport.height, JSON.stringify({ layout, geometry }));
+    if (viewport.width > 1000) {
+      assert.ok(geometry.conversationsBottom <= viewport.height - 16, JSON.stringify({ layout, geometry }));
+      assert.equal(geometry.conversationsScroll, true, 'long desktop history scrolls inside its bounded list');
+      assert.ok(geometry.conversationMinHeight >= 40, 'conversation rows retain readable height instead of shrinking and clipping their labels');
+    }
+    assert.ok(geometry.overflow <= 25 && geometry.horizontal <= 1, JSON.stringify({ layout, geometry }));
+  }
+  const exact = f.page.getByText('Review exact action', { exact: true }); await exact.click();
+  assert.equal(await f.page.getByLabel('Exact action arguments', { exact: true }).innerText(), '{}');
+  assert.equal(f.requests.filter((row) => row.method === 'POST').length, 0);
+});
+
+for (const viewport of [{ width: 1265, height: 712 }, { width: 390, height: 844 }]) test('compact chat quick keeps request buttons and composer inside its frame at ' + viewport.width + 'px', async (t) => {
+  const data = backgroundSnapshot(); data.responsibilities = []; data.approvals[0].arguments = '{}';
+  const f = await fixture(t, { data, assistant: true, hash: '#/photos', viewport, status: { sign_in_mode: 'family', linked: true } });
+  await f.page.getByRole('button', { name: 'Open quick chat', exact: true }).click();
+  await f.page.getByRole('button', { name: 'Review 1 permission request', exact: true }).click();
+  const geometry = await f.page.locator('#assistant-quick').evaluate((frame) => {
+    const r = frame.getBoundingClientRect(), thread = frame.querySelector('.assistant-transcript').getBoundingClientRect();
+    const actions = frame.querySelector('.assistant-approval-actions').getBoundingClientRect(), composer = frame.querySelector('.assistant-composer').getBoundingClientRect();
+    return { top: r.top, bottom: r.bottom, threadTop: thread.top, threadBottom: thread.bottom,
+      actionTop: actions.top, actionBottom: actions.bottom, composerBottom: composer.bottom };
+  });
+  assert.ok(geometry.top >= 0 && geometry.bottom <= viewport.height, JSON.stringify(geometry));
+  assert.ok(geometry.actionTop >= geometry.threadTop && geometry.actionBottom <= geometry.threadBottom + 1, JSON.stringify(geometry));
+  assert.ok(geometry.composerBottom <= geometry.bottom - 8, JSON.stringify(geometry));
+  const output = path.resolve(__dirname, '../.test-runs/compact-chat-sso'); mkdirSync(output, { recursive: true });
+  await f.page.screenshot({ path: path.join(output, `${viewport.width}-quick.png`), fullPage: true });
+  assert.equal(f.requests.filter((row) => row.method === 'POST').length, 0);
+});
 
 for (const mode of ['main', 'quick']) test('inline chat ' + mode + ' decides a background request without leaving the thread or duplicating controls', async (t) => {
   const data = backgroundSnapshot();
@@ -1272,6 +1424,7 @@ test('dependency-blocked approval preserves identity arguments and deadline thro
   await f.page.getByText('This check is paused or waiting for required tools. Review the follow-up before deciding. The original expiry still applies.', { exact: true }).waitFor();
   assert.equal(await card.locator('button').count(), 0);
   assert.equal(await card.locator('p').filter({ hasText: /^Expires / }).innerText(), originalDeadline);
+  await card.getByText('Review exact action', { exact: true }).click();
   assert.match(await card.innerText(), /PRIVATE ARGUMENT/);
   const output = path.resolve(__dirname, '../.test-runs/dependency-background'); mkdirSync(output, { recursive: true });
   await card.screenshot({ path: path.join(output, 'approval-waiting.png') });

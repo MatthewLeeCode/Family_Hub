@@ -177,7 +177,8 @@ const AssistantUI = (() => {
       this.connectionRows = []; this.connectionsScope = null; this.connectionsSignature = ''; this.connectionsNeedsReload = false;
       this.followupReviews = new Map(); this.followupNeedsReload = new Set(); this.approvalNeedsReload = new Set(); this.backgroundVerified = false;
       this.inlineNodes = new Map(); this.approvalsScope = null;
-      this.root = el('div', { class: 'assistant-view' });
+      this.signInMode = 'manual'; this.linked = null;
+      this.root = el('div', { class: 'assistant-view' + (this.tab === 'chat' && !quickOnly ? ' assistant-chat-view' : '') });
       this.notice = el('p', { class: 'assistant-notice small', role: 'status', 'aria-live': 'polite' });
       this.body = el('div', { class: 'assistant-body', tabindex: -1 });
       this.controls = el('div', { class: 'assistant-controls' });
@@ -185,7 +186,7 @@ const AssistantUI = (() => {
       if (quickOnly) this.quickFrame = quickFrame(this.root); else setMain(this.root);
     }
     live() { return this.alive && this.root.isConnected; }
-    stop() { this.alive = false; clearTimeout(this.timer); this.followupReviews.clear(); this.quickFrame?.remove(); }
+    stop() { this.alive = false; clearTimeout(this.timer); this.followupReviews.clear(); this.quickFrame?.remove(); this.chatResize?.disconnect(); window.removeEventListener('resize', this.fitChat); }
     attachQuick() {
       if (this.quickFrame || !this.snapshot || this.tab === 'chat') return;
       this.quickBody = el('div', { class: 'assistant-body', tabindex: -1 });
@@ -196,6 +197,7 @@ const AssistantUI = (() => {
     }
     detachQuick() {
       this.selectionVersion++;
+      this.chatResize?.disconnect(); window.removeEventListener('resize', this.fitChat);
       this.quickFrame?.remove(); this.quickFrame = null; this.quickBody = null; this.quickNotice = null;
       this.scopeSelectors = this.scopeSelectors.filter((select) => select.isConnected);
       this.transcript = null; this.composer = null; this.chat = null; this.selected = '';
@@ -231,14 +233,15 @@ const AssistantUI = (() => {
     }
     sessionChanged() {
       clearTimeout(this.timer);
+      this.chatResize?.disconnect(); window.removeEventListener('resize', this.fitChat);
       this.followupReviews.clear(); this.followupNeedsReload.clear();
       this.approvalNeedsReload.clear();
       if (!this.quickOnly && this.quickFrame) { this.detachQuick(); quickWanted = false; }
       this.alive = false; this.snapshot = null; this.chat = null; this.composer = null; this.transcript = null;
       this.transcriptNodes.clear(); fill(this.controls); fill(this.notice);
       fill(this.body, el('h1', { text: 'Your sign-in changed' }),
-        paragraph('Reload Family Hub before continuing. Your previous chat and unsent message have been cleared from this view.'),
-        el('button', { class: 'btn pri', type: 'button', text: 'Reload Family Hub', onclick: () => route() }));
+        paragraph((this.signInMode === 'family' ? 'Sign in to your Family Hub profile to continue. ' : 'Reload Family Hub before continuing. ') + 'Your previous chat and unsent message have been cleared from this view.'),
+        this.signInMode === 'family' ? this.familySignInLink() : el('button', { class: 'btn pri', type: 'button', text: 'Reload Family Hub', onclick: () => route() }));
     }
     error(error) {
       if (!this.live() || error instanceof Stale) return;
@@ -255,6 +258,7 @@ const AssistantUI = (() => {
         return;
       }
       const status = await this.request('GET', 'status');
+      this.readSignInMode(status);
       if (!status.configured) {
         fill(this.body, el('h1', { text: 'Assistant' }), paragraph('The assistant server has not been connected to this Family Hub yet.'),
           paragraph('Once the connection is configured, your chats and permission requests will appear here.', 'small dim'));
@@ -270,18 +274,36 @@ const AssistantUI = (() => {
       this.schedule();
       updateLauncher();
     }
+    readSignInMode(status) {
+      const mode = Object.hasOwn(status, 'sign_in_mode') ? status.sign_in_mode : 'manual';
+      if (!['family', 'manual'].includes(mode) || (mode === 'family' && (typeof status.linked !== 'boolean' || (status.signed_in && !status.linked)))) {
+        throw new Error('The sign-in status could not be verified. Reload Family Hub.');
+      }
+      this.signInMode = mode; this.linked = mode === 'family' ? status.linked : null;
+    }
+    familySignInLink() { return el('a', { class: 'btn', href: '#/profiles', text: 'Sign in to Family Hub', onclick: () => {
+      if (this.quickOnly || this.quickFrame) closeQuick();
+    } }); }
     reconnectButton() {
       fill(this.body, el('h1', { text: 'Assistant unavailable' }), paragraph('Your other Family Hub features are still available.'),
         el('button', { class: 'btn', type: 'button', text: 'Try again', onclick: () => this.start().catch((error) => this.error(error)) }),
-        el('button', { class: 'btn', type: 'button', text: 'Sign in again', onclick: () => { this.loginForm(); } }));
+        this.signInMode === 'family' ? this.familySignInLink() : el('button', { class: 'btn', type: 'button', text: 'Sign in again', onclick: () => { this.loginForm(); } }));
     }
     loginForm() {
       if (!this.quickOnly && this.quickFrame) { this.detachQuick(); quickWanted = false; updateLauncher(); }
       clearTimeout(this.timer); this.snapshot = null; this.chat = null;
+      this.chatResize?.disconnect(); window.removeEventListener('resize', this.fitChat);
       this.followupReviews.clear(); this.followupNeedsReload.clear();
       this.approvalNeedsReload.clear();
       this.scopeSelect = null; this.scopeSelectors = []; this.transcript = null; this.composer = null; this.selected = '';
       this.transcriptNodes.clear(); this.backgroundSignature = ''; this.conversationSignature = '';
+      fill(this.controls);
+      if (this.signInMode === 'family') {
+        fill(this.body, el('h1', { text: this.linked ? 'Sign in to Family Hub' : 'Assistant setup needed' }),
+          paragraph(this.linked ? 'Your Family Hub profile also signs you into your assistant.' : 'This Family Hub profile has not been linked to an assistant account. An administrator needs to finish its setup.'),
+          this.linked ? this.familySignInLink() : null);
+        return;
+      }
       const account = el('input', { type: 'text', autocomplete: 'username', required: true, maxlength: 1024 });
       const password = el('input', { type: 'password', autocomplete: 'current-password', required: true, maxlength: 1024 });
       const submit = el('button', { class: 'btn pri', type: 'submit', text: 'Sign in to Assistant' });
@@ -312,6 +334,7 @@ const AssistantUI = (() => {
             this.error(error);
             try {
               const status = await this.request('GET', 'status');
+              this.readSignInMode(status);
               if (!status.signed_in) { clearPrivateState(); this.loginForm(); return; }
             } catch (_) { /* Preserve the useful error without showing connection details. */ }
           }
@@ -419,20 +442,21 @@ const AssistantUI = (() => {
     }
     buildControls() {
       const select = this.workspaceSelector(); this.scopeSelect = select;
+      const connection = 'Connected as ' + this.snapshot.user.name + (this.signInMode === 'family' ? ' · Family Hub profile' : '');
       if (this.quickOnly) {
-        fill(this.controls, field('Workspace', select), paragraph('Connected as ' + this.snapshot.user.name, 'small dim'));
+        fill(this.controls, field('Workspace', select), paragraph(connection, 'small dim'));
         return;
       }
       const controlsLinks = [['background', 'Background'], ['memory', 'Memory'], ['activity', 'Activity'], ['permissions', 'Permissions'], ['connections', 'Connections']].map(([id, title]) =>
         el('a', { href: '#/assistant/' + id, 'aria-current': this.tab === id ? 'page' : null, text: title }));
       fill(this.controls,
-        el('div', { class: 'row between' }, el('div', {}, el('h1', { text: 'Assistant' }),
-          paragraph('Connected as ' + this.snapshot.user.name, 'small dim')), field('Workspace', select)),
+        el('div', { class: 'row between assistant-heading' }, el('div', {}, this.tab === 'chat' ? null : el('h1', { text: 'Assistant' }),
+          paragraph(connection, 'small dim')), field('Workspace', select)),
         el('div', { class: 'row between assistant-subnav' },
           el('nav', { class: 'assistant-tabs', 'aria-label': 'Assistant areas' },
             el('a', { href: '#/assistant', 'aria-current': this.tab === 'chat' ? 'page' : null, text: 'Chat' }),
             el('details', { open: this.tab !== 'chat' }, el('summary', { text: 'Assistant controls' }), el('div', { class: 'assistant-more-links' }, controlsLinks))),
-          el('button', { class: 'btn sm', type: 'button', text: 'Disconnect account', onclick: async (event) => {
+          this.signInMode === 'family' ? null : el('button', { class: 'btn sm', type: 'button', text: 'Disconnect account', onclick: async (event) => {
             const button = event.currentTarget; if (button.disabled) return; button.disabled = true;
             try { await this.request('POST', 'logout', {}); quickWanted = false; clearPrivateState(); await page(this.tab); }
             catch (error) { this.error(error); button.disabled = false; }
@@ -442,7 +466,8 @@ const AssistantUI = (() => {
       this.transcript = el('div', { class: 'assistant-transcript', tabindex: 0, role: 'log', 'aria-label': 'Conversation', 'aria-live': 'polite', 'aria-relevant': 'additions text' });
       this.chatUpdates = el('section', { class: 'assistant-inline-updates', 'aria-label': 'Workspace requests and updates', tabindex: -1, hidden: true });
       this.inlineNodes.clear();
-      this.composer = el('textarea', { rows: 3, maxlength: 16000, placeholder: 'Message your assistant…', 'aria-label': 'Message your assistant',
+      this.composer = el('textarea', { rows: 2, maxlength: 16000, placeholder: 'Message your assistant…', 'aria-label': 'Message your assistant',
+        'aria-description': 'Enter to send. Shift + Enter for a new line.', title: 'Enter to send · Shift + Enter for a new line',
         oninput: () => { drafts.set(this.selected || this.scope, this.composer.value); this.updateComposer(); },
         onkeydown: (event) => { if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) { event.preventDefault(); this.send(); } } });
       this.sendButton = el('button', { class: 'btn pri', type: 'submit', text: 'Send' });
@@ -460,12 +485,40 @@ const AssistantUI = (() => {
       this.newButton = el('button', { class: 'btn', type: 'button', text: 'New conversation', onclick: () => this.newChat() });
       const conversations = el('aside', { class: 'assistant-conversations', 'aria-label': 'Conversations in this workspace' }, el('h2', { text: 'Conversations' }), this.newButton, this.conversationList);
       const quick = this.quickOnly || !!this.quickBody;
+      const conversationDrawer = el('details', { class: quick ? 'assistant-quick-conversations' : 'assistant-main-conversations', open: !quick && window.innerWidth > 1000 },
+        el('summary', { text: 'Conversations' }), conversations);
       fill(this.quickBody || this.body, el('div', { class: 'assistant-chat-layout' },
         el('section', { class: 'assistant-chat', 'aria-label': 'Assistant chat' }, el('div', { class: 'row between assistant-chat-heading' }, this.chatTitle, this.requestJump), this.transcript,
           el('form', { class: 'assistant-composer', onsubmit: (event) => { event.preventDefault(); this.send(); } }, this.composer,
-            el('div', { class: 'row between' }, this.scopeHint, el('div', { class: 'row' }, this.stopButton, this.sendButton)),
-            el('div', { class: 'row between' }, paragraph('Enter to send · Shift + Enter for a new line', 'small dim'), this.chatStatus))),
-        quick ? el('details', { class: 'assistant-quick-conversations' }, el('summary', { text: 'Conversations' }), conversations) : conversations));
+            el('div', { class: 'row assistant-composer-actions' }, this.stopButton, this.sendButton), this.chatStatus)),
+        conversationDrawer));
+      {
+        this.chatResize?.disconnect(); window.removeEventListener('resize', this.fitChat);
+        let wide = window.innerWidth > 1000;
+        this.fitChat = () => {
+          const chat = (this.quickBody || this.body).querySelector('.assistant-chat');
+          if (!this.live() || !chat) return;
+          if (quick) {
+            const frame = this.quickFrame, content = frame?.querySelector(':scope > .assistant-view');
+            if (!frame || !content) return;
+            const margin = parseFloat(getComputedStyle(frame).bottom) || 0;
+            const preceding = chat.getBoundingClientRect().top - frame.getBoundingClientRect().top + content.scrollTop;
+            const padding = parseFloat(getComputedStyle(content).paddingBottom) || 0;
+            chat.style.height = Math.max(260, Math.min(520, window.innerHeight - margin * 2 - preceding - padding - 1)) + 'px';
+            return;
+          }
+          const nextWide = window.innerWidth > 1000;
+          if (wide !== nextWide) { conversationDrawer.open = nextWide; wide = nextWide; }
+          // Account for the selected theme's actual header height, not a fixed offset.
+          const top = chat.getBoundingClientRect().top + window.scrollY;
+          const height = Math.max(360, window.innerHeight - top - 16) + 'px';
+          chat.style.height = height; this.body.style.setProperty('--assistant-chat-height', height);
+        };
+        this.chatResize = new ResizeObserver(this.fitChat);
+        [this.controls, this.notice, conversationDrawer, this.quickFrame?.querySelector('.assistant-quick-header'), this.quickFrame?.querySelector('.assistant-view > .field'),
+          document.querySelector('#side'), document.querySelector('#top'), document.querySelector('#strip')].filter(Boolean).forEach((node) => this.chatResize.observe(node));
+        window.addEventListener('resize', this.fitChat); this.fitChat();
+      }
     }
     renderConversations() {
       const rows = this.conversations();
@@ -1051,10 +1104,12 @@ const AssistantUI = (() => {
       const followup = list(this.snapshot.responsibilities).find((row) => row.space_id === this.scope && row.current_job?.id === approval.job_id);
       const context = followup ? 'Follow-up: ' + followup.title : job ? 'For: ' + job.title : 'Request in this workspace';
       return el('article', { class: 'panel cut assistant-approval', 'data-approval-id': approval.id, tabindex: -1 },
-        paragraph('Permission request', 'assistant-message-role'), el('h3', { text: approval.capability }),
+        el('div', { class: 'row between assistant-approval-heading' }, el('h3', { text: approval.capability }), paragraph('Permission request', 'assistant-message-role')),
         paragraph(context, 'small dim'),
-        paragraph('Allow once authorises only the exact action below. It does not change your standing permissions.', 'small dim'),
-        el('pre', { class: 'assistant-arguments', tabindex: 0, 'aria-label': 'Exact action arguments', text: prettyArgs(approval.arguments) }),
+        el('details', { class: 'assistant-approval-detail', 'data-key': 'approval-arguments-' + approval.id },
+          el('summary', { text: 'Review exact action' }),
+          paragraph('Allow once authorises only this exact action. It does not change your standing permissions.', 'small dim'),
+          el('pre', { class: 'assistant-arguments', tabindex: 0, 'aria-label': 'Exact action arguments', text: prettyArgs(approval.arguments) })),
         paragraph((expired ? 'Expired ' : 'Expires ') + dateTime(approval.expires_at), 'small dim'),
         approval.dependency_blocked === true ? paragraph('This check is paused or waiting for required tools. Review the follow-up before deciding. The original expiry still applies.', 'small dim') :
           !available ? paragraph('This request’s availability could not be verified. Reload its current state before deciding.', 'small dim') : null,

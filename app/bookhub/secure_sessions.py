@@ -20,6 +20,7 @@ class ServerSession(CallbackDict, SessionMixin):
         self.original_sid = sid
         self.revision = revision
         self.modified = False
+        self.pending_primary_login = False
 
 
 def _hash(value):
@@ -60,7 +61,37 @@ def _valid_credentials(app, data):
         admin = app.hub.profile(admin_id) if admin_id else None
         if admin is None or admin["role"] != "admin" or data.get("_authenticator_stamp") != profile_stamp(admin):
             return False
+    from . import assistant_identity
+    if not assistant_identity.valid_parent(app, data):
+        return False
     return True
+
+
+def current_session_unchanged():
+    """A slow credential exchange cannot install over a newer session state."""
+    if not session.original_sid:
+        return True
+    row = current_app.hub.con().execute(
+        "SELECT document FROM web_sessions WHERE token_hash=? AND revision=? AND expires_at>?",
+        (_hash(session.original_sid), session.revision, int(time.time()))).fetchone()
+    if row is None:
+        return False
+    try:
+        return _valid_credentials(current_app, json.loads(row["document"]))
+    except (ValueError, TypeError):
+        return False
+
+
+def retire_profile_sessions(con, profile_id):
+    """Call inside the same transaction as a role/credential change or delete."""
+    for row in con.execute("SELECT token_hash,document FROM web_sessions").fetchall():
+        try:
+            data = json.loads(row["document"])
+            retire = not isinstance(data, dict) or profile_id in (data.get("pid"), data.get("_authenticator_id"))
+        except (ValueError, TypeError):
+            retire = True
+        if retire:
+            con.execute("DELETE FROM web_sessions WHERE token_hash=?", (row["token_hash"],))
 
 
 class Store(SessionInterface):
@@ -96,6 +127,13 @@ class Store(SessionInterface):
         created = value.get("_created", now)
         value["_created"] = created
         expires = created + LIFETIME
+        if "_assistant_expires" in value:
+            expires = min(expires, value["_assistant_expires"])
+        def rejected_login():
+            if value.pending_primary_login:
+                response.status_code = 409
+                response.set_data(app.json.dumps({"error": "Your sign-in changed. Reload Family Hub and try again."}))
+                response.content_type = "application/json"
         # Take the write lock before checking credentials. A request loaded before
         # logout/rotation or credential revocation must never resurrect that row.
         if not con.in_transaction:
@@ -104,12 +142,14 @@ class Store(SessionInterface):
             if expires <= now or not _valid_credentials(app, dict(value)):
                 if value.original_sid:
                     con.execute("DELETE FROM web_sessions WHERE token_hash=?", (_hash(value.original_sid),))
+                rejected_login()
                 return
             document = json.dumps(dict(value))
             if value.original_sid:
                 row = con.execute("SELECT document FROM web_sessions WHERE token_hash=? AND revision=? AND expires_at>?",
                                   (_hash(value.original_sid), value.revision, now)).fetchone()
                 if row is None or not _valid_credentials(app, json.loads(row["document"])):
+                    rejected_login()
                     return  # no Set-Cookie: do not overwrite a newer browser login
                 if value.sid == value.original_sid:
                     con.execute("UPDATE web_sessions SET document=?,expires_at=?,revision=revision+1 WHERE token_hash=? AND revision=?",
@@ -130,9 +170,17 @@ def rotate_session():
     session.modified = True
 
 
-def establish_session(pid, via_admin=False, target_stamp=None, authenticator=None):
+def establish_session(pid, via_admin=False, target_stamp=None, authenticator=None, sid=None, created_at=None):
     session.clear()
-    rotate_session()
+    if sid is None:
+        rotate_session()
+    else:
+        if not re.fullmatch(r"[A-Za-z0-9_-]{43}", sid):
+            raise ValueError("Invalid session identity")
+        session.sid = sid
+        session.modified = True
+    if created_at is not None:
+        session["_created"] = created_at
     session["pid"] = pid
     session["via_admin"] = via_admin
     session["_credential_stamp"] = target_stamp or _credential_stamp(current_app, pid)

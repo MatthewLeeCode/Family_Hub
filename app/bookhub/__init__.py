@@ -36,7 +36,8 @@ def create_app(config=None):
     )
     app.hub = Hub(config)
 
-    from . import api, kosync, opds, secure_sessions, assistant_bridge, personal_looks, notes_bridge
+    from . import api, kosync, opds, secure_sessions, assistant_bridge, personal_looks, notes_bridge, assistant_identity
+    assistant_identity.install(app)
     secure_sessions.install(app)
     app.register_blueprint(api.bp)
     app.register_blueprint(personal_looks.bp)
