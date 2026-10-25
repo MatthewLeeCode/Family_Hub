@@ -38,6 +38,7 @@ const AssistantUI = (() => {
     grant_unavailable: 'A required permission is unavailable.', grant_denied: 'A required tool is blocked by your permissions.',
     grant_manual: 'A required tool is set to manual use only.', grant_expired: 'A required permission expired.',
     membership_changed: 'Workspace membership changed.', owner_paused: 'This follow-up was paused.',
+    check_incomplete: 'The last check ended without deciding what to do next. Review before resuming.',
     unresolved_effect: 'An earlier action has an unresolved outcome. Resuming cannot clear it.',
     responsibility_expired: 'This follow-up expired.', budget_exhausted: 'No checks remain for a new run.'
   };
@@ -1041,7 +1042,7 @@ const AssistantUI = (() => {
               paragraph('Allow once authorises only the exact action below. It does not change your standing permissions.', 'small dim'),
               el('pre', { class: 'assistant-arguments', tabindex: 0, 'aria-label': 'Exact action arguments', text: prettyArgs(approval.arguments) }),
               paragraph((expired ? 'Expired ' : 'Expires ') + dateTime(approval.expires_at), 'small dim'),
-              approval.dependency_blocked === true ? paragraph('Waiting for a required tool before this request can be decided. Its original expiry still applies.', 'small dim') :
+              approval.dependency_blocked === true ? paragraph('This check is paused or waiting for required tools. Review it in Background before deciding. The original expiry still applies.', 'small dim') :
                 !available ? paragraph('This request’s availability could not be verified. Reload its current state before deciding.', 'small dim') : null,
               expired ? paragraph('This request can no longer be approved.', 'small dim') : null,
               available ? el('div', { class: 'row' }, expired ? null :

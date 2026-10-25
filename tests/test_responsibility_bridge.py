@@ -119,6 +119,25 @@ def test_legacy_waiting_terminal_and_charged_zero_budget_states_remain_distinct(
         assert contract.responsibility(row, "user-matt", {"space-matt"}) == row
 
 
+def test_incomplete_check_remains_paused_and_owner_can_review_before_resuming(client, fake_core):
+    link(client)
+    row = followup(block_reason="check_incomplete", next_check_at=None)
+    fake_core["response"] = core_response(snapshot(row))
+    response = client.get("/api/assistant/state")
+    assert response.status_code == 200
+    assert response.get_json()["responsibilities"] == [row]
+    assert row["status"] == "paused" and row["can_review_resume"] is True
+    current = review(dependencies=[dependency(permission_mode="confirm", changes=[])])
+    fake_core["response"] = core_response(current)
+    response = client.get(REVIEW)
+    assert response.status_code == 200 and response.get_json() == current
+    body = {"status": "active", "revision": row["revision"], "dependency_review_digest": current["review_digest"]}
+    fake_core["response"] = core_response({"ok": True})
+    response = client.post(BASE, json=body)
+    assert response.status_code == 200 and response.get_json() == {"ok": True}
+    assert fake_core["calls"][-1]["json"] == body
+
+
 def test_owner_review_rejects_wrong_identity_scope_digest_and_inconsistent_eligibility(client, fake_core):
     link(client)
     invalid = [review(id="another"), review(space_id="other-private"), review(owner_id="user-nicky"),

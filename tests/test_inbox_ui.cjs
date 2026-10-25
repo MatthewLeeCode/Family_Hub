@@ -810,6 +810,35 @@ test('dependency review precedes exact owner Resume and retains the last charged
   assert.equal(await f.page.getByRole('button', { name: 'Pause', exact: true }).count(), 1);
 });
 
+test('dependency incomplete check stays visibly paused until the owner reviews and resumes', async (t) => {
+  const data = boundSnapshot(), row = data.responsibilities[0];
+  Object.assign(row, { block_reason: 'check_incomplete', next_check_at: null,
+    dependencies: [{ capability: 'mail.search', connection_id: null, availability: 'ready', reason_code: null }] });
+  const f = await fixture(t, { data, assistant: true, hash: '#/assistant/background' });
+  const card = f.page.locator('[data-followup-id="bound-followup"]');
+  await card.getByText('The last check ended without deciding what to do next. Review before resuming.', { exact: true }).waitFor();
+  assert.match(await card.innerText(), /Paused/);
+  assert.equal(await card.getByRole('button', { name: 'Resume follow-up', exact: true }).count(), 0);
+  assert.equal(followupPosts(f).length, 0);
+  f.control.reviewHandler = async ({ json }) => {
+    await json(reviewOf(row, { dependencies: [{ ...row.dependencies[0], permission_mode: 'confirm', changes: [] }] })); return true;
+  };
+  await card.getByRole('button', { name: 'Review dependencies', exact: true }).click();
+  await card.getByRole('button', { name: 'Resume follow-up', exact: true }).waitFor();
+  assert.equal(reviewGets(f).length, 1); assert.equal(followupPosts(f).length, 0);
+  f.control.backgroundHandler = async ({ req, json }) => {
+    assert.deepEqual(req.postDataJSON(), { status: 'active', revision: 1, dependency_review_digest: 'd'.repeat(64) });
+    Object.assign(row, { status: 'active', revision: 2, availability: 'ready', block_reason: null,
+      next_check_at: Date.now() + 60000, can_pause: true, can_review_resume: false });
+    await json({ ok: true }); return true;
+  };
+  await card.getByRole('button', { name: 'Resume follow-up', exact: true }).click();
+  await f.page.getByText('Follow-up updated.', { exact: true }).waitFor();
+  assert.equal(followupPosts(f).length, 1);
+  assert.doesNotMatch(await card.innerText(), /last check ended without deciding/);
+  assert.equal(await card.getByRole('button', { name: 'Pause', exact: true }).count(), 1);
+});
+
 test('legacy dependency labeling retains direct Resume without a review digest', async (t) => {
   const f = await fixture(t, { data: backgroundSnapshot(), assistant: true, hash: '#/assistant/background' });
   await f.page.getByRole('button', { name: 'Resume', exact: true }).waitFor();
@@ -990,7 +1019,7 @@ test('dependency-blocked approval preserves identity arguments and deadline thro
   const originalDeadline = await card.locator('p').filter({ hasText: /^Expires / }).innerText();
   await f.page.evaluate(() => { window.oldApprovalButtons = [...document.querySelectorAll('.assistant-approval button')]; });
   approval.dependency_blocked = true;
-  await f.page.getByText('Waiting for a required tool before this request can be decided. Its original expiry still applies.', { exact: true }).waitFor();
+  await f.page.getByText('This check is paused or waiting for required tools. Review it in Background before deciding. The original expiry still applies.', { exact: true }).waitFor();
   assert.equal(await card.locator('button').count(), 0);
   assert.equal(await card.locator('p').filter({ hasText: /^Expires / }).innerText(), originalDeadline);
   assert.match(await card.innerText(), /PRIVATE ARGUMENT/);
@@ -1010,7 +1039,7 @@ test('dependency-blocked approval preserves identity arguments and deadline thro
 test('dependency-blocked approval expiry never renews its deadline or makes Allow available after recovery', async (t) => {
   const data = backgroundSnapshot(), approval = data.approvals[0], deadline = approval.expires_at; approval.dependency_blocked = true;
   const f = await fixture(t, { data, assistant: true, hash: '#/assistant/background' });
-  await f.page.getByText('Waiting for a required tool before this request can be decided. Its original expiry still applies.', { exact: true }).waitFor();
+  await f.page.getByText('This check is paused or waiting for required tools. Review it in Background before deciding. The original expiry still applies.', { exact: true }).waitFor();
   await f.page.evaluate((expired) => { Date.now = () => expired; }, deadline + 1);
   await f.page.getByText('This request can no longer be approved.', { exact: true }).waitFor();
   assert.equal(await f.page.locator('.assistant-approval button').count(), 0);
@@ -1028,7 +1057,7 @@ test('dependency-blocked approval conflict reloads availability once without rep
   await f.page.getByRole('button', { name: 'Allow once', exact: true }).waitFor();
   f.control.backgroundHandler = async ({ json }) => { approval.dependency_blocked = true; await json({ error: 'The required tool is unavailable.' }, 409); return true; };
   await f.page.getByRole('button', { name: 'Allow once', exact: true }).click();
-  await f.page.getByText('Waiting for a required tool before this request can be decided. Its original expiry still applies.', { exact: true }).waitFor();
+  await f.page.getByText('This check is paused or waiting for required tools. Review it in Background before deciding. The original expiry still applies.', { exact: true }).waitFor();
   assert.equal(await f.page.locator('.assistant-approval button').count(), 0);
   const decisions = f.requests.filter((request) => request.method === 'POST' && request.path.includes('/approvals/'));
   assert.equal(decisions.length, 1); assert.deepEqual(decisions[0].body, { approve: true });
@@ -1062,6 +1091,6 @@ test('dependency-blocked approval rejects a still-connected stale button while q
   await f.page.getByRole('button', { name: 'Deny', exact: true }).click();
   assert.equal(f.requests.filter((request) => request.method === 'POST').length, 0);
   release();
-  await f.page.getByText('Waiting for a required tool before this request can be decided. Its original expiry still applies.', { exact: true }).waitFor();
+  await f.page.getByText('This check is paused or waiting for required tools. Review it in Background before deciding. The original expiry still applies.', { exact: true }).waitFor();
   assert.equal(await f.page.locator('.assistant-approval button').count(), 0);
 });

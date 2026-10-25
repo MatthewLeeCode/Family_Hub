@@ -7,7 +7,7 @@ AVAILABILITY = {"ready", "waiting", "blocked", "not_evaluated"}
 REASONS = {"legacy_unbound", "connector_offline", "connector_checking", "connection_disabled",
            "connection_removed", "connection_changed", "operator_review_required", "catalog_changed", "grant_changed",
            "grant_unavailable", "grant_denied", "grant_manual", "grant_expired", "membership_changed",
-           "owner_paused", "unresolved_effect", "responsibility_expired", "budget_exhausted"}
+           "owner_paused", "check_incomplete", "unresolved_effect", "responsibility_expired", "budget_exhausted"}
 JOB_STATUSES = {"queued", "running", "waiting_approval", "waiting_dependency", "outcome_unknown",
                 "cancelled", "failed", "succeeded"}
 MODES = {"autonomous", "current_task", "conditional", "confirm", "manual", "unavailable"}
