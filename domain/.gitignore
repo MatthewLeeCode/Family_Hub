@@ -1,0 +1,5 @@
+/target/
+*.credential
+*.sqlite
+*.sqlite-*
+/private/

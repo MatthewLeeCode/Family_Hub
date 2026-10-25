@@ -12,6 +12,10 @@ bookhub-move-*.tar.gz
 *.db-wal
 *.db-shm
 secret.key
+*.credential
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
 
 # Python
 .venv/

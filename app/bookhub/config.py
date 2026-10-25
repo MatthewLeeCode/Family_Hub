@@ -38,6 +38,10 @@ class Config:
         self.trust_proxy = _bool("TRUST_PROXY", False)
         self.secure_cookies = _bool("BOOKHUB_SECURE_COOKIES", False)
         self.assistant_core_url = (os.environ.get("ASSISTANT_CORE_URL") or "http://127.0.0.1:4280").rstrip("/")
+        self.family_notes_port = _int("FAMILY_NOTES_PORT", 0)
+        self.family_notes_credentials = _path("FAMILY_NOTES_CREDENTIALS")
+        # Enable only after retiring the core's old Notes write path.
+        self.family_notes_active = _bool("FAMILY_NOTES_ACTIVE", False)
 
         self.cwa_url = (os.environ.get("CWA_URL") or "").rstrip("/")
         # For the one job that changes the library: removing spare copies (docs/08). Family Hub signs in

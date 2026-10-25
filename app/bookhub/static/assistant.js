@@ -499,9 +499,17 @@ const AssistantUI = (() => {
       if (!force && this.grantsScope === this.scope) return;
       const scope = this.scope;
       const version = this.stateVersion;
-      const result = await this.request('GET', 'grants?space_id=' + encodeURIComponent(scope));
+      let result;
+      try {
+        result = await this.request('GET', 'grants?space_id=' + encodeURIComponent(scope));
+        if (!Array.isArray(result.grants) || result.grants.some((grant) => grant.space_id !== scope)) throw new Error('Permissions could not be loaded for this workspace.');
+      } catch (error) {
+        if (this.live() && scope === this.scope) this.grantsLoadError = error.message;
+        throw error;
+      }
       if (!this.live() || scope !== this.scope || version !== this.stateVersion) return;
-      if (!Array.isArray(result.grants) || result.grants.some((grant) => grant.space_id !== scope)) throw new Error('Permissions could not be loaded for this workspace.');
+      if (this.grantsLoadError && this.notice.textContent === this.grantsLoadError) this.announce('');
+      this.grantsLoadError = null;
       this.grantsScope = scope;
       replacePreservingFocus(this.body, el('h2', { text: 'Permissions' }),
         paragraph('Choose what your assistant may do in this workspace. These settings belong to your account, including in a shared workspace.'),

@@ -34,7 +34,7 @@ let routeGen = 0;
 class Stale extends Error {}
 const sessionNotice = typeof BroadcastChannel === 'function' ? new BroadcastChannel('family-hub-session') : null;
 if (sessionNotice) sessionNotice.onmessage = (event) => {
-  if (event.data === 'changed') AssistantUI.sessionChanged();
+  if (event.data === 'changed') { AssistantUI.sessionChanged(); NotesUI.sessionChanged(); }
 };
 async function api(method, url, body, isActive, headers = {}) {
   const gen = routeGen;
@@ -45,7 +45,7 @@ async function api(method, url, body, isActive, headers = {}) {
   let data = null;
   try { data = await res.json(); } catch (e) { /* no body */ }
   if (method === 'POST' && ['/api/login', '/api/logout', '/api/assistant/login', '/api/assistant/logout'].includes(url) &&
-      (res.ok || data?.context)) sessionNotice?.postMessage('changed');
+      (res.ok || data?.context)) { sessionNotice?.postMessage('changed'); NotesUI.sessionChanged(); }
   // Moved to another page meanwhile: a save still happened, but nothing may redraw the old page over the new one.
   if (isActive ? !isActive() : gen !== routeGen) throw new Stale('moved on');
   if (!res.ok) {
@@ -135,6 +135,7 @@ function setMain(...kids) { const m = main(); m.replaceChildren(...kids.flat().f
 const SECTIONS = [
   ['home', 'Home', '#/home', 'M3 11l9-7 9 7v9h-6v-6H9v6H3z'],
   ['assistant', 'Assistant', '#/assistant', 'M4 4h16v12H9l-5 4zM8 8h8M8 12h5'],
+  ['notes', 'Notes', '#/notes', 'M5 3h14v18H5zM9 8h6M9 12h6M9 16h4'],
   ['movies', 'Movies and TV Shows', '#/movies', 'M3 5h18v14H3zM7 5v14M17 5v14M3 9h4M3 15h4M17 9h4M17 15h4'],
   ['books', 'Books', '#/library', 'M4 4h7a2 2 0 0 1 1 1 2 2 0 0 1 1-1h7v15h-7a2 2 0 0 0-1 1 2 2 0 0 0-1-1H4zM12 5v15'],
   ['downloads', 'Downloads', '#/downloads', 'M12 4v11M7 10l5 5 5-5M5 20h14'],
@@ -152,7 +153,7 @@ function starMark() {
   return svg;
 }
 // Which section each page belongs to, and the tabs along the top of that section.
-const PAGE_SECTION = { home: 'home', assistant: 'assistant', movies: 'movies', downloads: 'downloads', photos: 'photos', files: 'files', appearance: 'appearance', admin: 'admin', sort: 'admin', tags: 'admin', copies: 'admin' };
+const PAGE_SECTION = { home: 'home', assistant: 'assistant', notes: 'notes', movies: 'movies', downloads: 'downloads', photos: 'photos', files: 'files', appearance: 'appearance', admin: 'admin', sort: 'admin', tags: 'admin', copies: 'admin' };
 function sectionTabs(section) {
   if (section === 'books') {
     const t = [['library', 'Library', '#/library']];
@@ -163,7 +164,7 @@ function sectionTabs(section) {
   if (section === 'movies') return mediaTabs();
   return [];
 }
-const SECTION_LOGO = { home: 'Home', assistant: 'Assistant', movies: 'Movies and TV', downloads: 'Downloads', books: 'Books', photos: 'Photos', files: 'Files', appearance: 'Your appearance', admin: 'Admin', profiles: 'Family Hub' };
+const SECTION_LOGO = { home: 'Home', assistant: 'Assistant', notes: 'Notes', movies: 'Movies and TV', downloads: 'Downloads', books: 'Books', photos: 'Photos', files: 'Files', appearance: 'Your appearance', admin: 'Admin', profiles: 'Family Hub' };
 
 // Put the household's chosen colour scheme and accent in place, if the page is not showing them already.
 function applyLook(look) {
@@ -192,7 +193,7 @@ function shell(section, tab) {
   applyLook(S.look);
   const signedIn = !!S.me;
   document.getElementById('shell').classList.toggle('signed-out', !signedIn);
-  const sections = SECTIONS.filter(([k]) => (k !== 'admin' || isAdmin()) && (!['movies', 'downloads', 'assistant'].includes(k) || !isGuest()));
+  const sections = SECTIONS.filter(([k]) => (k !== 'admin' || isAdmin()) && (!['movies', 'downloads', 'assistant', 'notes'].includes(k) || !isGuest()));
   fill(document.getElementById('side'),
     el('div', { class: 'hub glow' }, starMark(), 'Family Hub'),
     el('nav', { 'aria-label': 'Family Hub sections' }, sections.map(([k, label, href, d]) =>
@@ -222,13 +223,15 @@ let lastHash = null;
 async function route() {
   routeGen++;
   AssistantUI.leave();
+  NotesUI.leave();
   try { S = await api('GET', '/api/state'); } catch (e) { if (e instanceof Stale) return; setMain(el('p', { class: 'bad', text: e.message })); return; }
   AssistantUI.identity(S.me?.id, S.assistant_context);
+  NotesUI.identity(S.me?.id, S.assistant_context);
   const parts = location.hash.replace(/^#\/?/, '').split('/');
   let page = parts[0] || (S.me ? 'home' : 'profiles');
   if (S.setup_needed) { shell('profiles'); return pageSetup(); }
   if (!S.me) page = 'profiles';
-  if (isGuest() && ['dashboard', 'mybooks', 'admin', 'sort', 'tags', 'copies', 'discover', 'devices', 'series', 'read', 'movies', 'downloads', 'appearance', 'assistant'].includes(page)) page = 'library';
+  if (isGuest() && ['dashboard', 'mybooks', 'admin', 'sort', 'tags', 'copies', 'discover', 'devices', 'series', 'read', 'movies', 'downloads', 'appearance', 'assistant', 'notes'].includes(page)) page = 'library';
   if (!S.series && (page === 'series' || page === 'read')) page = 'library';
   if (['admin', 'sort', 'tags', 'copies'].includes(page) && !isAdmin()) page = 'home';
   const section = page === 'profiles' ? 'profiles' : (PAGE_SECTION[page] || 'books');
@@ -244,7 +247,7 @@ async function route() {
   // A new screen starts at the top, not wherever the last one was scrolled to.
   if (moved) window.scrollTo(0, 0);
   setMain(el('p', { class: 'small dim', role: 'status', text: 'Loading…' }));
-  const pages = { home: pageHome, assistant: AssistantUI.page, movies: pageMovies, downloads: pageDownloads, shelf: pageShelf, photos: pageSoon, files: pageSoon, profiles: pageProfiles, appearance: pageAppearance, library: pageLibrary, book: pageBook,
+  const pages = { home: pageHome, assistant: AssistantUI.page, notes: NotesUI.page, movies: pageMovies, downloads: pageDownloads, shelf: pageShelf, photos: pageSoon, files: pageSoon, profiles: pageProfiles, appearance: pageAppearance, library: pageLibrary, book: pageBook,
     dashboard: pageDashboard, admin: parts[1] === 'books' ? pageBooksAdmin : pageHubAdmin, sort: pageSort, tags: pageTags, copies: pageCopies, details: pageDetails,
     discover: pageDiscover, devices: pageDevices, series: pageSeries, read: pageRead, mybooks: pageMyBooks };
   const gen = routeGen;
