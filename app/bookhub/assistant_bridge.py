@@ -16,6 +16,7 @@ from .api import fail, profile_only
 from .secure_sessions import rotate_session, view_context
 from . import assistant_mail_contract as mail_contract
 from . import assistant_responsibility_contract as responsibility_contract, assistant_identity
+from . import assistant_question_contract as question_contract
 
 bp = Blueprint("assistant_bridge", __name__, url_prefix="/api/assistant")
 
@@ -294,7 +295,42 @@ def assistant_state(who):
     if request.args:
         return fail("Unexpected request fields.")
     viewer = (session.get("assistant_user") or {}).get("id")
-    return call("GET", "state", project=lambda payload: responsibility_contract.snapshot(payload, viewer), expected_status=200)
+    def project(payload):
+        public = responsibility_contract.snapshot(payload, viewer)
+        public["questions"] = question_contract.collection(payload.get("questions", []), viewer,
+                                                           {space["id"] for space in public["spaces"]})
+        return public
+    return call("GET", "state", project=project, expected_status=200)
+
+
+@bp.get("/questions/<string:item>")
+@bp.post("/questions/<string:item>/answer")
+@profile_only
+def question_response(who, item):
+    denied = usable_profile()
+    if denied:
+        return denied
+    if not question_contract.reference(item):
+        return fail("Invalid question reference.")
+    viewer = (session.get("assistant_user") or {}).get("id")
+    if request.method == "GET":
+        if (set(request.args) != {"space_id"} or len(request.args.getlist("space_id")) != 1
+                or not question_contract.reference(request.args["space_id"])):
+            return fail("Choose a workspace.")
+        space = request.args["space_id"]
+        return call("GET", "questions/" + item + "?" + urlencode({"space_id": space}),
+                    project=lambda payload: question_contract.question(payload, viewer, item=item, space=space),
+                    error_codes=question_contract.ERRORS, expected_status=200)
+    if request.args:
+        return fail("Unexpected request fields.")
+    if request.content_length and request.content_length > 4096:
+        return fail("That request is too large.", 413)
+    body = request.get_json(silent=True)
+    if not question_contract.answer(body):
+        return fail("Expected the question workspace, revision, digest and chosen option or an explicit decline.")
+    return call("POST", "questions/" + item + "/answer", body,
+                project=lambda payload: question_contract.decision(payload, viewer, item, body),
+                error_codes=question_contract.ERRORS, expected_status=200)
 
 
 @bp.get("/responsibilities/<string:item>/resume-review")

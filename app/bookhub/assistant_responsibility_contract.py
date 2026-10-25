@@ -8,7 +8,7 @@ REASONS = {"legacy_unbound", "connector_offline", "connector_checking", "connect
            "connection_removed", "connection_changed", "operator_review_required", "catalog_changed", "grant_changed",
            "grant_unavailable", "grant_denied", "grant_manual", "grant_expired", "membership_changed",
            "owner_paused", "check_incomplete", "unresolved_effect", "responsibility_expired", "budget_exhausted"}
-JOB_STATUSES = {"queued", "running", "waiting_approval", "waiting_dependency", "outcome_unknown",
+JOB_STATUSES = {"queued", "running", "waiting_approval", "waiting_input", "waiting_dependency", "outcome_unknown",
                 "cancelled", "failed", "succeeded"}
 MODES = {"autonomous", "current_task", "conditional", "confirm", "manual", "unavailable"}
 CHANGES = {"grant_changed", "catalog_changed", "membership_changed", "connection_changed"}
@@ -26,7 +26,7 @@ FIELDS = ("id", "space_id", "owner_id", "title", "instruction", "reason", "stop_
           "dependency_state", "availability", "block_reason", "dependencies", "next_probe_at", "current_job",
           "can_pause", "can_cancel", "can_review_resume")
 SNAPSHOT_FIELDS = ("user", "spaces", "mailboxes", "emails", "assets", "notices", "preferences", "automations",
-                   "conversations", "jobs", "drafts", "items", "members", "responsibilities", "approvals", "policies")
+                   "conversations", "jobs", "drafts", "items", "members", "responsibilities", "approvals", "policies", "questions")
 PUBLIC_ROWS = {
     "spaces": "id name kind", "mailboxes": "id space_id name address provider",
     "emails": "id space_id mailbox_id sender address subject body category important received_at",

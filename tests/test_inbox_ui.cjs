@@ -62,7 +62,7 @@ async function fixture(t, { profile = {}, family = {}, status = {}, data = snaps
     data,
     next: null,
     status: { configured: true, signed_in: true, user: data.user, ...status },
-    previews: {}, runs: new Map(), mailHandler: null, chatHandler: null, backgroundHandler: null, reviewHandler: null, revocation: 'not_connected', logoutWait: null,
+    previews: {}, runs: new Map(), mailHandler: null, chatHandler: null, backgroundHandler: null, reviewHandler: null, questionHandler: null, revocation: 'not_connected', logoutWait: null,
     requests,
     async holdNextSnapshot() {
       let start, finish;
@@ -106,6 +106,20 @@ async function fixture(t, { profile = {}, family = {}, status = {}, data = snaps
     if (url.pathname === '/api/logout' && req.method() === 'POST') return json({ ok: true, core_revocation: control.revocation });
     if (url.pathname === '/api/login' && req.method() === 'POST') return json({ error: 'Sign-in failed', core_revocation: control.revocation }, 401);
     if (url.pathname === '/api/assistant/login' && req.method() === 'POST') return json({ error: 'Sign-in failed', context: 'b'.repeat(64), core_revocation: control.revocation }, 401);
+    const question = url.pathname.match(/^\/api\/assistant\/questions\/([^/]+)(\/answer)?$/);
+    if (question) {
+      if (control.questionHandler && await control.questionHandler({ route, req, url, json })) return;
+      const space = req.method() === 'GET' ? url.searchParams.get('space_id') : req.postDataJSON().space_id;
+      const row = control.data.questions?.find((item) => item.id === question[1] && item.space_id === space);
+      if (!row) return json({ error: 'Question unavailable', code: 'not_found' }, 404);
+      if (req.method() === 'POST') {
+        const body = req.postDataJSON();
+        if (body.expected_revision !== row.revision || body.question_digest !== row.question_digest || !row.can_answer) return json({ error: 'Question changed', code: 'question_changed' }, 409);
+        Object.assign(row, { status: body.choice_id === null ? 'declined' : 'answered', choice_id: body.choice_id,
+          answered_at: Date.now(), revision: row.revision + 1, can_answer: false, job_status: row.job_status === 'waiting_dependency' ? 'waiting_dependency' : 'queued' });
+      }
+      return json(row);
+    }
     const resumeReview = url.pathname.match(/^\/api\/assistant\/responsibilities\/([^/]+)\/resume-review$/);
     if (resumeReview && req.method() === 'GET') {
       if (control.reviewHandler && await control.reviewHandler({ route, req, url, json })) return;
@@ -646,6 +660,276 @@ function backgroundSnapshot() {
   data.jobs = []; data.preferences = []; data.notices = [];
   return data;
 }
+
+function questionSnapshot(space = 'private') {
+  const data = backgroundSnapshot(); data.responsibilities = []; data.approvals = [];
+  data.questions = [{ id: 'question-1', job_id: 'question-job', conversation_id: null, space_id: space, owner_id: data.user.id,
+    prompt: 'Which inbox should I summarise?', options: [{ id: 'work', label: 'Work inbox' }, { id: 'personal', label: 'Personal inbox' }],
+    status: 'pending', revision: 1, question_digest: 'b4'.repeat(32), created_at: Date.now(), expires_at: Date.now() + 3600000,
+    choice_id: null, answered_at: null, job_status: 'waiting_input', can_answer: true }];
+  data.jobs = [{ id: 'question-job', space_id: space, kind: 'agent', title: 'Choose a summary', status: 'waiting_input' }];
+  return data;
+}
+const questionPosts = (f) => f.requests.filter((row) => row.method === 'POST' && /^\/api\/assistant\/questions\/[^/]+\/answer$/.test(row.path));
+
+for (const mode of ['main', 'quick', 'background']) test('durable question ' + mode + ' has no default choice and saves only explicit input', async (t) => {
+  const data = questionSnapshot();
+  const f = await fixture(t, { data, assistant: true, hash: mode === 'main' ? '#/assistant' : '#/assistant/background' });
+  if (mode === 'quick') await f.page.getByRole('button', { name: 'Open quick chat', exact: true }).click();
+  const card = f.page.locator('[data-question-id="question-1"]'); await card.waitFor();
+  assert.equal(await card.count(), 1, 'one actionable copy even when quick chat overlays Background');
+  assert.equal(await card.locator('input:checked').count(), 0);
+  assert.equal(await card.getByRole('button', { name: 'Submit answer', exact: true }).isDisabled(), true);
+  assert.equal(await card.getByRole('button', { name: 'Decline', exact: true }).isEnabled(), true);
+  await card.getByRole('radio', { name: 'Work inbox', exact: true }).check();
+  const held = await f.control.holdNextSnapshot(); await held.started; await releaseAndSettle(f.page, held);
+  assert.equal(await card.getByRole('radio', { name: 'Work inbox', exact: true }).isChecked(), true);
+  const hash = new URL(f.page.url()).hash;
+  await card.getByRole('button', { name: 'Submit answer', exact: true }).click();
+  await card.waitFor({ state: 'detached' });
+  assert.equal(new URL(f.page.url()).hash, hash);
+  assert.deepEqual(questionPosts(f).map((request) => request.body), [{ space_id: 'private', expected_revision: 1, question_digest: 'b4'.repeat(32), choice_id: 'work' }]);
+  assert.equal(f.requests.filter((request) => request.method === 'POST').length, 1, 'no approval, grant, follow-up or message mutation');
+  assert.equal(data.questions[0].status, 'answered');
+});
+
+test('durable question decline is explicit null and does not need a selected option', async (t) => {
+  const data = questionSnapshot();
+  const f = await fixture(t, { data, assistant: true, hash: '#/assistant' });
+  await f.page.getByRole('button', { name: 'Decline', exact: true }).click();
+  await f.page.locator('[data-question-result="question-1"]').waitFor();
+  assert.deepEqual(questionPosts(f)[0].body, { space_id: 'private', expected_revision: 1, question_digest: 'b4'.repeat(32), choice_id: null });
+  assert.equal(data.questions[0].status, 'declined');
+  assert.match(await f.page.locator('[data-question-result]').innerText(), /Question declined/);
+});
+
+test('durable question preserves selection and a single in-flight answer across quick to main navigation', async (t) => {
+  const data = questionSnapshot();
+  const f = await fixture(t, { data, assistant: true, hash: '#/assistant/background' });
+  await f.page.getByRole('button', { name: 'Open quick chat', exact: true }).click();
+  await f.page.getByRole('radio', { name: 'Personal inbox', exact: true }).check();
+  await f.page.getByRole('button', { name: 'Expand to main chat', exact: true }).click();
+  await f.page.getByRole('heading', { name: 'Private chat', exact: true }).waitFor();
+  assert.equal(await f.page.getByRole('radio', { name: 'Personal inbox', exact: true }).isChecked(), true);
+  let release, started;
+  const pending = new Promise((resolve) => { release = resolve; }); const begun = new Promise((resolve) => { started = resolve; });
+  f.control.questionHandler = async ({ req, json }) => {
+    if (req.method() !== 'POST') return false;
+    started(); await pending;
+    Object.assign(data.questions[0], { status: 'answered', revision: 2, choice_id: 'personal', answered_at: Date.now(), can_answer: false, job_status: 'queued' });
+    await json(data.questions[0]); return true;
+  };
+  await f.page.getByRole('button', { name: 'Submit answer', exact: true }).click(); await begun;
+  await f.page.evaluate(() => { location.hash = '#/photos'; });
+  await f.page.getByRole('button', { name: 'Open quick chat', exact: true }).click();
+  const dialog = f.page.getByRole('dialog', { name: 'Quick chat', exact: true });
+  await dialog.getByText('Submitting answer…', { exact: true }).waitFor();
+  assert.equal(await dialog.getByRole('button', { name: 'Submit answer', exact: true }).isDisabled(), true);
+  assert.equal(await dialog.getByRole('button', { name: 'Decline', exact: true }).isDisabled(), true);
+  await dialog.getByRole('button', { name: 'Expand to main chat', exact: true }).click();
+  await f.page.getByText('Submitting answer…', { exact: true }).waitFor();
+  release(); await f.page.locator('[data-question-result="question-1"]').waitFor();
+  assert.equal(questionPosts(f).length, 1);
+});
+
+test('durable question lost response locks choices until reload and deliberately replays only the original answer', async (t) => {
+  const data = questionSnapshot();
+  const f = await fixture(t, { data, assistant: true, hash: '#/assistant' });
+  let attempts = 0;
+  f.control.questionHandler = async ({ req, route }) => {
+    if (req.method() !== 'POST' || ++attempts > 1) return false;
+    await route.abort('failed'); return true;
+  };
+  await f.page.getByRole('radio', { name: 'Work inbox', exact: true }).check();
+  await f.page.getByRole('button', { name: 'Submit answer', exact: true }).click();
+  await f.page.getByRole('button', { name: 'Reload status', exact: true }).waitFor();
+  assert.equal(questionPosts(f).length, 1);
+  assert.equal(await f.page.getByRole('radio', { name: 'Personal inbox', exact: true }).isDisabled(), true);
+  assert.equal(await f.page.getByRole('button', { name: 'Retry answer', exact: true }).count(), 0);
+  await f.page.evaluate(() => { location.hash = '#/photos'; });
+  await f.page.getByRole('button', { name: 'Open quick chat', exact: true }).click();
+  await f.page.getByRole('button', { name: 'Reload status', exact: true }).click();
+  await f.page.getByRole('button', { name: 'Retry answer', exact: true }).waitFor();
+  assert.equal(await f.page.getByRole('radio', { name: 'Personal inbox', exact: true }).isDisabled(), true);
+  assert.equal(questionPosts(f).length, 1, 'GET reconciliation never repeats the mutation');
+  await f.page.getByRole('button', { name: 'Retry answer', exact: true }).click();
+  await f.page.locator('[data-question-result="question-1"]').waitFor();
+  assert.deepEqual(questionPosts(f).map((row) => row.body), [questionPosts(f)[0].body, questionPosts(f)[0].body]);
+  assert.equal(questionPosts(f).length, 2);
+});
+
+test('durable question lost response discovers the saved answer without another POST', async (t) => {
+  const data = questionSnapshot(), saved = { ...clone(data.questions[0]), status: 'answered', revision: 2, choice_id: 'work', answered_at: Date.now(), can_answer: false, job_status: 'queued' };
+  const f = await fixture(t, { data, assistant: true, hash: '#/assistant' });
+  f.control.questionHandler = async ({ req, route, json }) => {
+    if (req.method() === 'POST') await route.abort('failed');
+    else { data.questions[0] = saved; await json(saved); }
+    return true;
+  };
+  await f.page.getByRole('radio', { name: 'Work inbox', exact: true }).check();
+  await f.page.getByRole('button', { name: 'Submit answer', exact: true }).click();
+  await f.page.getByRole('button', { name: 'Reload status', exact: true }).click();
+  await f.page.locator('[data-question-result="question-1"]').waitFor();
+  assert.equal(questionPosts(f).length, 1);
+  assert.match(await f.page.locator('[data-question-result]').innerText(), /Answer saved.*Work inbox/);
+});
+
+test('durable question scope change clears private choices and ignores a late answer callback', async (t) => {
+  const data = questionSnapshot(); data.questions[0].prompt = 'PRIVATE QUESTION';
+  const f = await fixture(t, { data, assistant: true, hash: '#/assistant' });
+  let release, started;
+  const pending = new Promise((resolve) => { release = resolve; }); const begun = new Promise((resolve) => { started = resolve; });
+  f.control.questionHandler = async ({ req, json }) => {
+    if (req.method() !== 'POST') return false;
+    started(); await pending;
+    await json({ ...data.questions[0], status: 'answered', choice_id: 'work', answered_at: Date.now(), revision: 2, can_answer: false }); return true;
+  };
+  await f.page.getByRole('radio', { name: 'Work inbox', exact: true }).check();
+  await f.page.evaluate(() => { window.oldQuestionSubmit = document.querySelector('.assistant-question button[type=submit]'); });
+  await f.page.getByRole('button', { name: 'Submit answer', exact: true }).click(); await begun;
+  await f.page.getByLabel('Assistant workspace', { exact: true }).selectOption('shared');
+  assert.doesNotMatch(await f.mainText(), /PRIVATE QUESTION|Work inbox|Answer saved/);
+  release();
+  await f.page.evaluate(() => window.oldQuestionSubmit.click());
+  await f.page.getByRole('heading', { name: 'Shared chat', exact: true }).waitFor();
+  assert.doesNotMatch(await f.mainText(), /PRIVATE QUESTION|Work inbox|Answer saved/);
+  assert.equal(questionPosts(f).length, 1);
+});
+
+test('durable question identity invalidation clears prompts and ignores the delayed old account result', async (t) => {
+  const data = questionSnapshot(); data.questions[0].prompt = 'PRIVATE QUESTION';
+  const f = await fixture(t, { data, assistant: true, hash: '#/assistant' });
+  let release, started;
+  const pending = new Promise((resolve) => { release = resolve; }); const begun = new Promise((resolve) => { started = resolve; });
+  f.control.questionHandler = async ({ req, json }) => {
+    if (req.method() !== 'POST') return false;
+    started(); await pending; await json({ ...data.questions[0], status: 'declined', answered_at: Date.now(), revision: 2, can_answer: false }); return true;
+  };
+  await f.page.getByRole('button', { name: 'Decline', exact: true }).click(); await begun;
+  const other = await f.context.newPage(); await other.goto(ORIGIN + '/notice');
+  await other.evaluate(() => { const channel = new BroadcastChannel('family-hub-session'); channel.postMessage('changed'); channel.close(); });
+  await f.page.getByRole('heading', { name: 'Your sign-in changed', exact: true }).waitFor();
+  release(); await f.page.evaluate(() => new Promise((resolve) => requestAnimationFrame(resolve)));
+  assert.doesNotMatch(await f.mainText(), /PRIVATE QUESTION|Work inbox|Question declined/);
+  assert.equal(questionPosts(f).length, 1);
+});
+
+test('durable question expiry and paused replies retain their distinct input semantics', async (t) => {
+  const data = questionSnapshot(); data.questions[0].job_status = 'waiting_dependency';
+  const f = await fixture(t, { data, assistant: true, hash: '#/assistant' });
+  await f.page.getByText('You can answer now. A paused check still needs to be resumed.', { exact: true }).waitFor();
+  await f.page.getByRole('button', { name: 'Decline', exact: true }).click();
+  await f.page.locator('[data-question-result="question-1"]').waitFor();
+  assert.equal(data.questions[0].job_status, 'waiting_dependency');
+  assert.equal(f.requests.filter((row) => row.method === 'POST').length, 1);
+  const expired = questionSnapshot(); expired.questions[0].created_at = Date.now() - 120000; expired.questions[0].expires_at = Date.now() - 1000;
+  const g = await fixture(t, { data: expired, assistant: true, hash: '#/assistant' });
+  await g.page.getByText('This question has expired.', { exact: true }).waitFor();
+  assert.equal(await g.page.getByRole('radio', { name: 'Work inbox', exact: true }).isDisabled(), true);
+  assert.equal(await g.page.getByRole('button', { name: 'Decline', exact: true }).isDisabled(), true);
+  assert.equal(questionPosts(g).length, 0);
+});
+
+test('durable question malformed rows and foreign owners fail closed before input is shown', async (t) => {
+  for (const change of [{ owner_id: 'user-nicky' }, { space_id: 'foreign' }, { options: [{ id: 'one', label: 'One' }] }, { can_answer: 'yes' }, { status: 'future' },
+    { prompt: ' \t\n' }, { prompt: 'Hidden\0text' }, { job_status: 'queued' }, { options: [{ id: 'one', label: '\t' }, { id: 'two', label: 'Two' }] }]) {
+    const data = questionSnapshot(); Object.assign(data.questions[0], change);
+    const f = await fixture(t, { data, assistant: true, hash: '#/assistant' });
+    await f.page.getByText('The questions could not be verified. Reload before answering.', { exact: true }).waitFor();
+    assert.equal(await f.page.getByRole('radio').count(), 0);
+    assert.equal(questionPosts(f).length, 0);
+  }
+});
+
+test('durable question shared workspace and escaped text keep input separate from approvals', async (t) => {
+  const data = questionSnapshot('shared'); const payload = '<img src=x onerror=window.questionXss=true>';
+  data.questions[0].prompt = payload; data.questions[0].options[0].label = payload;
+  const f = await fixture(t, { data, assistant: true, hash: '#/assistant' });
+  await f.page.getByLabel('Assistant workspace', { exact: true }).selectOption('shared');
+  const card = f.page.locator('[data-question-id="question-1"]'); await card.waitFor();
+  assert.equal(await card.locator('img,[onerror]').count(), 0);
+  assert.match(await card.innerText(), /<img src=x onerror=/);
+  await card.getByRole('radio', { name: payload, exact: true }).check();
+  await card.getByRole('button', { name: 'Submit answer', exact: true }).click();
+  await f.page.locator('[data-question-result="question-1"]').waitFor();
+  assert.equal(questionPosts(f)[0].body.space_id, 'shared');
+  assert.equal(f.requests.filter((row) => row.path.includes('/approvals/') || row.path.includes('/grants')).length, 0);
+});
+
+test('durable question late status lookup cannot replace a newer confirmed answer with pending controls', async (t) => {
+  const data = questionSnapshot(), original = clone(data.questions[0]);
+  const f = await fixture(t, { data, assistant: true, hash: '#/assistant' });
+  let release, started;
+  const pending = new Promise((resolve) => { release = resolve; }); const begun = new Promise((resolve) => { started = resolve; });
+  f.control.questionHandler = async ({ req, route, json }) => {
+    if (req.method() === 'POST') await route.abort('failed');
+    else { started(); await pending; await json(original); }
+    return true;
+  };
+  await f.page.getByRole('radio', { name: 'Work inbox', exact: true }).check();
+  await f.page.getByRole('button', { name: 'Submit answer', exact: true }).click();
+  await f.page.getByRole('button', { name: 'Reload status', exact: true }).click(); await begun;
+  Object.assign(data.questions[0], { status: 'answered', choice_id: 'work', revision: 2, answered_at: Date.now(), job_status: 'queued', can_answer: false });
+  await f.page.locator('[data-question-result="question-1"]').waitFor();
+  const response = f.page.waitForResponse((value) => value.request().method() === 'GET' && new URL(value.url()).pathname === '/api/assistant/questions/question-1');
+  release(); await (await response).finished();
+  await f.page.evaluate(() => new Promise((resolve) => requestAnimationFrame(resolve)));
+  assert.equal(await f.page.locator('[data-question-id]').count(), 0);
+  assert.match(await f.page.locator('[data-question-result]').innerText(), /Answer saved.*Work inbox/);
+  assert.equal(questionPosts(f).length, 1);
+});
+
+test('durable question invalid refreshed rows remove old controls and cannot be submitted by detached callbacks', async (t) => {
+  const data = questionSnapshot();
+  const f = await fixture(t, { data, assistant: true, hash: '#/assistant' });
+  await f.page.getByRole('radio', { name: 'Work inbox', exact: true }).check();
+  await f.page.evaluate(() => { window.oldQuestion = document.querySelector('.assistant-question form'); });
+  const held = await f.control.holdNextSnapshot(); await held.started;
+  const bad = clone(data); bad.questions[0].owner_id = 'user-nicky'; bad.questions[0].prompt = 'OTHER OWNER SECRET';
+  await releaseAndSettle(f.page, held, bad);
+  await f.page.getByText('The questions could not be verified. Reload before answering.', { exact: true }).waitFor();
+  assert.equal(await f.page.locator('[data-question-id]').count(), 0);
+  assert.doesNotMatch(await f.mainText(), /OTHER OWNER SECRET/);
+  await f.page.evaluate(() => window.oldQuestion.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })));
+  assert.equal(questionPosts(f).length, 0);
+});
+
+test('durable question rejects an unverified mutation acknowledgement without unlocking another choice', async (t) => {
+  const data = questionSnapshot();
+  const f = await fixture(t, { data, assistant: true, hash: '#/assistant' });
+  f.control.questionHandler = async ({ req, json }) => {
+    if (req.method() !== 'POST') return false;
+    await json({ ...data.questions[0], status: 'answered', choice_id: 'work', answered_at: Date.now(), can_answer: false, revision: 9 }); return true;
+  };
+  await f.page.getByRole('radio', { name: 'Work inbox', exact: true }).check();
+  await f.page.getByRole('button', { name: 'Submit answer', exact: true }).click();
+  await f.page.getByRole('button', { name: 'Reload status', exact: true }).waitFor();
+  assert.equal(await f.page.getByRole('radio', { name: 'Personal inbox', exact: true }).isDisabled(), true);
+  assert.equal(await f.page.locator('[data-question-result]').count(), 0);
+  assert.equal(questionPosts(f).length, 1);
+});
+
+for (const viewport of [{ width: 1265, height: 712 }, { width: 390, height: 844 }]) test('durable question input card fits the quiet chat at ' + viewport.width + 'px across themes', async (t) => {
+  const data = questionSnapshot();
+  const f = await fixture(t, { data, assistant: true, hash: '#/assistant', viewport, status: { sign_in_mode: 'family', linked: true } });
+  await f.page.getByRole('button', { name: 'Review 1 request', exact: true }).waitFor();
+  const output = path.resolve(__dirname, '../.test-runs/durable-questions'); mkdirSync(output, { recursive: true });
+  for (const theme of ['dark', 'light', 'paper', 'blueprint']) {
+    await f.page.evaluate((theme) => { Object.assign(document.documentElement.dataset, { layout: 'quiet', theme }); }, theme);
+    await f.page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    await f.page.getByRole('button', { name: 'Review 1 request', exact: true }).click();
+    const geometry = await f.page.evaluate(() => {
+      const thread = document.querySelector('.assistant-transcript').getBoundingClientRect(), actions = document.querySelector('.assistant-question-actions').getBoundingClientRect();
+      const composer = document.querySelector('.assistant-composer').getBoundingClientRect();
+      return { threadTop: thread.top, threadBottom: thread.bottom, actionsTop: actions.top, actionsBottom: actions.bottom, composerBottom: composer.bottom, overflow: document.documentElement.scrollWidth - innerWidth };
+    });
+    await f.page.screenshot({ path: path.join(output, `${viewport.width}-${theme}.png`), fullPage: true });
+    assert.ok(geometry.actionsTop >= geometry.threadTop && geometry.actionsBottom <= geometry.threadBottom + 1, JSON.stringify({ theme, geometry }));
+    assert.ok(geometry.composerBottom <= viewport.height && geometry.overflow <= 1, JSON.stringify({ theme, geometry }));
+    assert.equal(await f.page.locator('.assistant-question input:checked').count(), 0);
+  }
+  assert.equal(questionPosts(f).length, 0);
+});
 
 for (const mode of ['main', 'quick']) test('family sign-in ' + mode + ' uses the connected profile without a second account form', async (t) => {
   const f = await fixture(t, { data: backgroundSnapshot(), assistant: true, hash: mode === 'main' ? '#/assistant' : '#/photos',

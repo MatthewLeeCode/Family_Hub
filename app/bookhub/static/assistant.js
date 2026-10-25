@@ -16,6 +16,8 @@ const AssistantUI = (() => {
   const inFlight = new Map();
   const connectionOperations = new Map();
   const approvalOperations = new Map();
+  const questionSelections = new Map();
+  const questionOperations = new Map();
   const controlTabs = ['background', 'memory', 'activity', 'permissions', 'connections'];
   const connectionLabels = { ready: 'Ready', offline: 'Offline', review_required: 'Review required', disabled: 'Disabled', checking: 'Checking' };
   const connectionReasons = {
@@ -45,10 +47,28 @@ const AssistantUI = (() => {
   };
   const dependencyModes = { autonomous: 'Automatic within saved limits', current_task: 'Verified current request', conditional: 'Conditional', confirm: 'Ask each time', manual: 'Manual only', unavailable: 'Unavailable' };
   const dependencyChanges = { grant_changed: 'Permission changed', catalog_changed: 'Reviewed tool changed', membership_changed: 'Membership changed', connection_changed: 'Connection authority changed' };
-  const followupJobStates = ['queued', 'running', 'waiting_approval', 'waiting_dependency', 'outcome_unknown', 'cancelled', 'failed', 'succeeded'];
+  const followupJobStates = ['queued', 'running', 'waiting_approval', 'waiting_input', 'waiting_dependency', 'outcome_unknown', 'cancelled', 'failed', 'succeeded'];
+  const questionJobStates = [...followupJobStates, 'interrupted'];
   const publicId = (value) => typeof value === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(value);
   const safeCount = (value, minimum = 0, maximum = Number.MAX_SAFE_INTEGER) => Number.isSafeInteger(value) && value >= minimum && value <= maximum;
   const safeText = (value, maximum) => typeof value === 'string' && new TextEncoder().encode(value).length <= maximum;
+  const optionId = (value) => typeof value === 'string' && /^[A-Za-z0-9_-]{1,32}$/.test(value);
+  const questionKey = (row) => row.space_id + ':' + row.id;
+  const questionBinding = (row) => JSON.stringify([row.id, row.job_id, row.conversation_id, row.space_id, row.owner_id,
+    row.prompt, row.options, row.revision, row.question_digest, row.created_at, row.expires_at]);
+  function validQuestion(row, viewer, spaces) {
+    if (!row || !['id', 'job_id', 'space_id', 'owner_id'].every((key) => publicId(row[key])) || row.owner_id !== viewer ||
+        !spaces.some((space) => space.id === row.space_id) || !(row.conversation_id === null || publicId(row.conversation_id)) ||
+        !['pending', 'answered', 'declined', 'expired', 'cancelled'].includes(row.status) || !questionJobStates.includes(row.job_status) ||
+        !safeCount(row.revision, 1) || typeof row.question_digest !== 'string' || !/^[a-f0-9]{64}$/.test(row.question_digest) ||
+        !safeText(row.prompt, 2000) || !row.prompt.trim() || row.prompt.includes('\0') || !safeCount(row.created_at) || !safeCount(row.expires_at) || row.expires_at <= row.created_at ||
+        typeof row.can_answer !== 'boolean' || (row.can_answer && (row.status !== 'pending' || !['waiting_input', 'waiting_dependency'].includes(row.job_status))) || !Array.isArray(row.options) || row.options.length < 2 || row.options.length > 6 ||
+        !row.options.every((option) => option && optionId(option.id) && safeText(option.label, 160) && option.label.trim() && !option.label.includes('\0')) ||
+        new Set(row.options.map((option) => option.id)).size !== row.options.length) return false;
+    if (row.status === 'answered') return optionId(row.choice_id) && row.options.some((option) => option.id === row.choice_id) && safeCount(row.answered_at);
+    if (row.status === 'declined') return row.choice_id === null && safeCount(row.answered_at);
+    return row.choice_id === null && row.answered_at === null;
+  }
   const fixedReason = (value) => value === null || (typeof value === 'string' && Object.hasOwn(dependencyReasons, value));
   const validAvailability = (state, reason) => typeof state === 'string' && Object.hasOwn(dependencyLabels, state) && fixedReason(reason) &&
     (state === 'ready' ? reason === null : state === 'waiting' ? ['connector_offline', 'connector_checking'].includes(reason) : state !== 'blocked' || reason !== null);
@@ -89,9 +109,9 @@ const AssistantUI = (() => {
   const dateTime = (at) => at ? new Date(at).toLocaleString() : 'Not scheduled';
   const paragraph = (text, cls = 'dim') => el('p', { class: cls, text });
   const prettyArgs = (args) => { try { return JSON.stringify(JSON.parse(args), null, 2); } catch (_) { return String(args); } };
-  const running = (job) => ['queued', 'running', 'retry', 'waiting_approval', 'waiting_dependency'].includes(job.status);
+  const running = (job) => ['queued', 'running', 'retry', 'waiting_approval', 'waiting_input', 'waiting_dependency'].includes(job.status);
 
-  function clearPrivateState() { identityEpoch++; drafts.clear(); selections.clear(); inFlight.clear(); connectionOperations.clear(); approvalOperations.clear(); coreOwner = null; selectedScope = ''; }
+  function clearPrivateState() { identityEpoch++; drafts.clear(); selections.clear(); inFlight.clear(); connectionOperations.clear(); approvalOperations.clear(); questionSelections.clear(); questionOperations.clear(); coreOwner = null; selectedScope = ''; }
   function sessionChanged() {
     clearPrivateState(); familyContext = null;
     if (active) active.sessionChanged();
@@ -177,6 +197,7 @@ const AssistantUI = (() => {
       this.connectionRows = []; this.connectionsScope = null; this.connectionsSignature = ''; this.connectionsNeedsReload = false;
       this.followupReviews = new Map(); this.followupNeedsReload = new Set(); this.approvalNeedsReload = new Set(); this.backgroundVerified = false;
       this.inlineNodes = new Map(); this.approvalsScope = null;
+      this.questionsScope = null;
       this.signInMode = 'manual'; this.linked = null;
       this.root = el('div', { class: 'assistant-view' + (this.tab === 'chat' && !quickOnly ? ' assistant-chat-view' : '') });
       this.notice = el('p', { class: 'assistant-notice small', role: 'status', 'aria-live': 'polite' });
@@ -350,6 +371,13 @@ const AssistantUI = (() => {
         const snapshot = await this.request('GET', 'state');
         if (version !== this.stateVersion) return;
         if (snapshot?.user?.id !== coreOwner) { sessionChanged(); throw new Stale('assistant account changed'); }
+        const questions = snapshot.questions === undefined ? [] : snapshot.questions;
+        if (!Array.isArray(questions) || questions.length > 100 || new Set(questions.map((row) => row?.id)).size !== questions.length ||
+            !questions.every((row) => validQuestion(row, snapshot.user.id, list(snapshot.spaces)))) {
+          this.invalidateQuestions();
+          throw new Error('The questions could not be verified. Reload before answering.');
+        }
+        snapshot.questions = questions;
         const validWork = Array.isArray(snapshot.responsibilities) && snapshot.responsibilities.length <= 100 &&
             new Set(snapshot.responsibilities.map((row) => row?.id)).size === snapshot.responsibilities.length &&
             snapshot.responsibilities.every((row) => validFollowup(row, snapshot.user?.id, list(snapshot.spaces)));
@@ -382,6 +410,10 @@ const AssistantUI = (() => {
         if (previousScope !== this.scope) this.clearScopedControls();
         this.backgroundVerified = validWork;
         this.approvalsScope = this.scope;
+        this.questionsScope = this.scope;
+        for (const row of questions) if (row.status !== 'pending') {
+          questionOperations.delete(questionKey(row)); questionSelections.delete(questionKey(row));
+        }
         selectedScope = this.scope;
         if (!this.scopeSelect) this.buildControls();
         this.scopeSelectors.forEach((select) => { select.value = this.scope; });
@@ -409,7 +441,7 @@ const AssistantUI = (() => {
       catch (error) {
         if (this.live() && version === this.stateVersion && this.tab === 'background') {
           this.followupReviews.clear(); this.backgroundSignature = ''; this.backgroundVerified = false;
-          this.approvalsScope = null; this.inlineNodes.clear();
+          this.approvalsScope = null; this.questionsScope = null; this.inlineNodes.clear();
           if (this.chatUpdates) { fill(this.chatUpdates, paragraph('Current requests could not be verified. Reload background work before deciding.', 'small dim')); this.chatUpdates.hidden = false; }
           if (this.requestJump) this.requestJump.hidden = true;
           fill(this.body, el('h2', { text: 'Background unavailable' }), paragraph('The current state could not be verified. Reload before using follow-up controls.'),
@@ -434,6 +466,7 @@ const AssistantUI = (() => {
           this.switching = false;
           if (this.live()) {
             this.updateComposer();
+            if (this.questionsScope === this.scope) { this.backgroundSignature = ''; this.renderBackground(); }
             if (hadFocus && (!document.activeElement || document.activeElement === document.body)) select.focus({ preventScroll: true });
           }
         }
@@ -478,7 +511,7 @@ const AssistantUI = (() => {
       this.scopeHint = el('span', { class: 'small dim' });
       this.chatTitle = el('h2', { class: 'assistant-chat-title', text: 'New conversation' });
       this.requestJump = el('button', { class: 'btn sm assistant-request-jump', type: 'button', hidden: true, onclick: () => {
-        const card = this.chatUpdates?.querySelector('[data-approval-id]');
+        const card = this.chatUpdates?.querySelector('[data-approval-id], [data-question-id]');
         if (card) { this.revealInline(card); card.focus({ preventScroll: true }); }
       } });
       this.conversationList = el('div', { class: 'assistant-conversation-list' });
@@ -695,6 +728,7 @@ const AssistantUI = (() => {
     }
     clearScopedControls() {
       this.scopeVersion++;
+      this.questionsScope = null; questionSelections.clear();
       this.approvalsScope = null; this.inlineNodes.clear();
       if (this.chatUpdates) { fill(this.chatUpdates); this.chatUpdates.hidden = true; }
       if (this.requestJump) this.requestJump.hidden = true;
@@ -1091,6 +1125,140 @@ const AssistantUI = (() => {
           at ? el('time', { class: 'assistant-update-time', text: dateTime(at) }) : null),
         full.length > 160 ? el('details', {}, el('summary', { text: 'More' }), paragraph(full, '')) : null);
     }
+    invalidateQuestions() {
+      this.questionsScope = null; questionSelections.clear();
+      for (const [key, entry] of this.inlineNodes) if (key.startsWith('question-')) { entry.node.remove(); this.inlineNodes.delete(key); }
+      for (const node of this.workElements('[data-question-id]')) node.remove();
+      this.backgroundSignature = ''; this.renderBackground();
+    }
+    currentQuestion(row, epoch = this.scopeVersion) {
+      const current = list(this.snapshot?.questions).find((item) => item.id === row.id && item.space_id === this.scope);
+      return this.live() && this.context === familyContext && !this.switching && this.scopeVersion === epoch &&
+        this.questionsScope === this.scope && row.space_id === this.scope && row.owner_id === coreOwner && current &&
+        questionBinding(current) === questionBinding(row) && current.status === row.status && current.can_answer === row.can_answer && current.job_status === row.job_status;
+    }
+    canAnswerQuestion(row, epoch = this.scopeVersion) {
+      return this.currentQuestion(row, epoch) && row.status === 'pending' && row.can_answer && row.expires_at > Date.now();
+    }
+    saveQuestionRow(row) {
+      const index = this.snapshot.questions.findIndex((item) => item.id === row.id);
+      if (index >= 0) this.snapshot.questions[index] = row;
+      else this.snapshot.questions.push(row);
+    }
+    focusQuestion(id, fallback = false) {
+      if (document.activeElement && document.activeElement !== document.body) return;
+      const card = this.workElements('[data-question-id]').find((node) => node.dataset.questionId === id);
+      (card || (fallback ? this.composer || this.quickBody || this.body : null))?.focus({ preventScroll: true });
+    }
+    async answerQuestion(row, choice, card, retry = false) {
+      const key = questionKey(row), old = questionOperations.get(key), epoch = this.scopeVersion;
+      if (!card.isConnected || !this.canAnswerQuestion(row, epoch) || (retry && (!old || old.changed)) || (old && !(retry && old.phase === 'retry_ready')) ||
+          (!retry && choice !== null && !row.options.some((option) => option.id === choice))) return;
+      const body = retry ? old.body : { space_id: row.space_id, expected_revision: row.revision, question_digest: row.question_digest, choice_id: choice };
+      if (body.expected_revision !== row.revision || body.question_digest !== row.question_digest) return;
+      const owner = identityKey(), context = this.context;
+      const hadFocus = card.contains(document.activeElement);
+      const current = () => this.live() && owner === identityKey() && context === familyContext && this.scope === row.space_id && this.scopeVersion === epoch;
+      const entry = { phase: 'sending', body, binding: questionBinding(row) };
+      questionOperations.set(key, entry); this.pending.add('question-' + row.id); this.stateVersion++;
+      this.backgroundSignature = ''; this.renderBackground();
+      if (hadFocus) this.focusQuestion(row.id);
+      let saved = null;
+      try {
+        const result = await this.request('POST', 'questions/' + pathId(row.id) + '/answer', body, true);
+        if (!validQuestion(result, row.owner_id, [{ id: row.space_id }]) || result.id !== row.id || result.question_digest !== body.question_digest ||
+            result.revision !== body.expected_revision + 1 || result.choice_id !== body.choice_id || result.status !== (body.choice_id === null ? 'declined' : 'answered')) throw new Error('The answer could not be confirmed. Reload its status.');
+        saved = result;
+        if (questionOperations.get(key) === entry) questionOperations.delete(key);
+        questionSelections.delete(key);
+      } catch (_) {
+        // Keep the immutable decision across chat remounts. A lost response is not a rejection.
+        if (owner === identityKey() && context === familyContext && questionOperations.get(key) === entry) entry.phase = 'unknown';
+      } finally {
+        this.pending.delete('question-' + row.id);
+      }
+      if (!current()) return;
+      if (saved) { this.saveQuestionRow(saved); this.announce(saved.status === 'answered' ? 'Answer saved.' : 'Question declined.'); }
+      this.backgroundSignature = ''; this.renderBackground();
+      if (hadFocus) this.focusQuestion(row.id, true);
+      if (saved) { try { await this.refresh(); } catch (error) { this.error(error); } }
+    }
+    async reloadQuestion(row, card) {
+      const key = questionKey(row), entry = questionOperations.get(key), epoch = this.scopeVersion;
+      if (!card.isConnected || !this.currentQuestion(row, epoch) || !entry || !['unknown', 'retry_ready'].includes(entry.phase)) return;
+      const owner = identityKey(), context = this.context;
+      const hadFocus = card.contains(document.activeElement);
+      const current = () => this.live() && owner === identityKey() && context === familyContext && this.scope === row.space_id && this.scopeVersion === epoch;
+      entry.phase = 'checking'; this.backgroundSignature = ''; this.renderBackground();
+      if (hadFocus) this.focusQuestion(row.id);
+      try {
+        const result = await this.request('GET', 'questions/' + pathId(row.id) + '?space_id=' + pathId(row.space_id));
+        if (!validQuestion(result, row.owner_id, [{ id: row.space_id }]) || result.id !== row.id) throw new Error('Invalid question status');
+        if (questionOperations.get(key) !== entry) return;
+        if (!current()) { if (questionOperations.get(key) === entry) entry.phase = 'unknown'; return; }
+        const latest = list(this.snapshot.questions).find((item) => item.id === row.id);
+        if (latest && (latest.revision > result.revision || (latest.status !== 'pending' && result.status === 'pending'))) {
+          entry.phase = 'unknown'; this.backgroundSignature = ''; this.renderBackground(); return;
+        }
+        this.saveQuestionRow(result);
+        if (result.status !== 'pending') { questionOperations.delete(key); questionSelections.delete(key); }
+        else if (questionBinding(result) === entry.binding) entry.phase = 'retry_ready';
+        else { entry.phase = 'unknown'; entry.changed = true; questionSelections.delete(key); }
+      } catch (_) {
+        if (owner === identityKey() && context === familyContext && questionOperations.get(key) === entry) entry.phase = 'unknown';
+      }
+      if (current()) { this.backgroundSignature = ''; this.renderBackground(); if (hadFocus) this.focusQuestion(row.id, true); }
+    }
+    questionCard(row) {
+      const key = questionKey(row), entry = questionOperations.get(key), binding = questionBinding(row), epoch = this.scopeVersion;
+      let selection = questionSelections.get(key);
+      if (selection?.binding !== binding) { questionSelections.delete(key); selection = null; }
+      const expired = row.expires_at <= Date.now(), available = this.canAnswerQuestion(row, epoch);
+      const card = el('article', { class: 'panel cut assistant-question', 'data-question-id': row.id, 'data-focus-key': 'question-card-' + row.id, tabindex: -1 });
+      const submit = el('button', { class: 'btn pri', type: 'submit', text: 'Submit answer', 'data-focus-key': 'question-submit-' + row.id,
+        disabled: !available || !!entry || !selection });
+      const options = el('fieldset', { class: 'assistant-question-options', disabled: !available || !!entry },
+        el('legend', { text: row.prompt }), row.options.map((option) => {
+          const input = el('input', { type: 'radio', name: 'question-' + row.id, value: option.id, checked: selection?.choice === option.id,
+            'data-focus-key': 'question-option-' + row.id + '-' + option.id, onchange: () => {
+              if (!input.isConnected || !input.checked || !this.canAnswerQuestion(row, epoch) || questionOperations.has(key)) return;
+              questionSelections.set(key, { binding, choice: option.id }); submit.disabled = false;
+            } });
+          return el('label', {}, input, el('span', { text: option.label }));
+        }));
+      let controls;
+      if (entry && entry.phase !== 'sending') {
+        const checking = entry.phase === 'checking';
+        controls = el('div', { class: 'assistant-question-recovery' },
+          paragraph(checking ? 'Checking the saved response…' : entry.changed ? 'This question changed while the response was unconfirmed. Reload status before continuing.' :
+            entry.phase === 'retry_ready' ? 'The response is still unconfirmed. A retry sends the same choice.' : 'The response may have been saved. Reload status before continuing.', 'small dim'),
+          el('div', { class: 'row' },
+            el('button', { class: 'btn', type: 'button', text: 'Reload status', disabled: checking, 'data-focus-key': 'question-reload-' + row.id,
+              onclick: () => this.reloadQuestion(row, card) }),
+            entry.phase === 'retry_ready' && available && !entry.changed ? el('button', { class: 'btn pri', type: 'button', text: entry.body.choice_id === null ? 'Retry decline' : 'Retry answer',
+              'data-focus-key': 'question-retry-' + row.id, onclick: () => this.answerQuestion(row, entry.body.choice_id, card, true) }) : null));
+      } else controls = el('div', { class: 'row assistant-question-actions' }, submit,
+        el('button', { class: 'btn', type: 'button', text: 'Decline', disabled: !available || !!entry, 'data-focus-key': 'question-decline-' + row.id,
+          onclick: () => this.answerQuestion(row, null, card) }));
+      const job = list(this.snapshot.jobs).find((item) => item.id === row.job_id && item.space_id === row.space_id);
+      const space = list(this.snapshot.spaces).find((item) => item.id === row.space_id);
+      const origin = [job?.title, space?.name, space?.kind === 'shared' ? 'Shared' : 'Private'].filter(Boolean).join(' · ');
+      fill(card, paragraph('Question', 'assistant-message-role'), paragraph(origin, 'small dim'),
+        el('form', { onsubmit: (event) => {
+          event.preventDefault(); const selected = questionSelections.get(key);
+          if (selected?.binding === binding && this.currentQuestion(row, epoch)) this.answerQuestion(row, selected.choice, card);
+        } }, options, paragraph((expired ? 'Expired ' : 'Expires ') + dateTime(row.expires_at), 'small dim'),
+        paragraph('Answering does not grant permission to take an action.', 'small dim'),
+        row.job_status === 'waiting_dependency' && available ? paragraph('You can answer now. A paused check still needs to be resumed.', 'small dim') : null,
+        expired ? paragraph('This question has expired.', 'small dim') : !row.can_answer ? paragraph('This question cannot be answered now.', 'small dim') : null,
+        entry?.phase === 'sending' ? paragraph(entry.body.choice_id === null ? 'Declining…' : 'Submitting answer…', 'small dim') : null, controls));
+      return card;
+    }
+    questionResult(row) {
+      const title = { answered: 'Answer saved', declined: 'Question declined', expired: 'Question expired', cancelled: 'Question cancelled' }[row.status];
+      const choice = row.options.find((option) => option.id === row.choice_id);
+      return this.inlineNotification(title, choice ? choice.label : row.prompt, row.answered_at || (row.status === 'expired' ? row.expires_at : null), { 'data-question-result': row.id });
+    }
     approvalCard(approval) {
       const expired = approval.expires_at <= Date.now();
       const available = approval.dependency_blocked === false && !this.approvalNeedsReload.has(approval.id);
@@ -1144,9 +1312,16 @@ const AssistantUI = (() => {
         render: () => this.followupNeedsInput(row) ? this.followupCard(row) : this.inlineNotification(row.title,
           (dependencyReasons[row.block_reason] || followupLabels[row.status]) + (row.next_check_at ? ' Next check: ' + dateTime(row.next_check_at) : ''), null, { 'data-update-followup-id': row.id }) });
       const approvals = scoped('approvals').filter((item) => item.status === 'pending');
-      this.requestJump.hidden = approvals.length === 0;
-      this.requestJump.textContent = approvals.length + (approvals.length === 1 ? ' request' : ' requests');
-      this.requestJump.setAttribute('aria-label', 'Review ' + approvals.length + (approvals.length === 1 ? ' permission request' : ' permission requests'));
+      const questions = this.questionsScope === this.scope ? scoped('questions').filter((row) => row.owner_id === coreOwner) : [];
+      const pendingQuestions = questions.filter((row) => row.status === 'pending');
+      for (const row of questions.filter((row) => row.status !== 'pending').slice(0, 3).reverse()) records.push({ key: 'question-result-' + row.id,
+        signature: JSON.stringify(row), render: () => this.questionResult(row) });
+      for (const row of pendingQuestions) records.push({ key: 'question-input-' + row.id,
+        signature: JSON.stringify([row, row.expires_at <= Date.now(), this.switching, questionOperations.get(questionKey(row))]), render: () => this.questionCard(row) });
+      const requestCount = approvals.length + pendingQuestions.length;
+      this.requestJump.hidden = requestCount === 0;
+      this.requestJump.textContent = requestCount + (requestCount === 1 ? ' request' : ' requests');
+      this.requestJump.setAttribute('aria-label', 'Review ' + requestCount + (pendingQuestions.length ? (requestCount === 1 ? ' request' : ' requests') : (requestCount === 1 ? ' permission request' : ' permission requests')));
       for (const row of approvals) records.push({ key: 'approval-' + row.id,
         signature: JSON.stringify([row, row.expires_at <= Date.now(), this.pending.has('approval-' + row.id), approvalOperations.has(this.scope + ':approval-' + row.id), this.approvalNeedsReload.has(row.id)]),
         render: () => this.approvalCard(row) });
@@ -1158,7 +1333,7 @@ const AssistantUI = (() => {
         if (!entry) {
           entry = { node: el('div', { class: 'assistant-inline-record', tabindex: -1 }), signature: null };
           this.inlineNodes.set(record.key, entry); this.chatUpdates.append(entry.node);
-          if (!firstNewRequest && record.key.startsWith('approval-')) firstNewRequest = entry.node;
+          if (!firstNewRequest && (record.key.startsWith('approval-') || record.key.startsWith('question-input-'))) firstNewRequest = entry.node;
         }
         if (entry.signature !== record.signature) {
           replacePreservingFocus(entry.node, record.render()); entry.signature = record.signature;
@@ -1183,8 +1358,9 @@ const AssistantUI = (() => {
       }
       this.renderInlineUpdates();
       if (!['background', 'memory', 'activity'].includes(this.tab)) return;
-      const signature = JSON.stringify([this.tab, this.scope, snapshot.approvals, snapshot.responsibilities, snapshot.jobs, snapshot.preferences, snapshot.notices,
+      const signature = JSON.stringify([this.tab, this.scope, snapshot.approvals, snapshot.questions, snapshot.responsibilities, snapshot.jobs, snapshot.preferences, snapshot.notices,
         list(snapshot.approvals).map((a) => a.expires_at <= Date.now()), scoped('responsibilities').map((row) => row.expires_at <= Date.now()),
+        list(snapshot.questions).map((row) => row.expires_at <= Date.now()), this.questionsScope, this.switching, Array.from(questionOperations),
         Array.from(this.pending), Array.from(approvalOperations.keys()), Array.from(this.followupReviews), Array.from(this.followupNeedsReload), Array.from(this.approvalNeedsReload), !!this.quickBody]);
       if (signature === this.backgroundSignature) return;
       this.backgroundSignature = signature;
@@ -1204,10 +1380,14 @@ const AssistantUI = (() => {
         return;
       }
       const approvals = scoped('approvals').filter((a) => a.status === 'pending');
+      const questions = this.questionsScope === this.scope ? scoped('questions').filter((row) => row.status === 'pending' && row.owner_id === coreOwner) : [];
       const inlineIds = new Set(this.quickBody ? this.inlineFollowups().filter((row) => this.followupNeedsInput(row)).map((row) => row.id) : []);
       const responsibilities = scoped('responsibilities').filter((row) => !inlineIds.has(row.id));
       replacePreservingFocus(this.body, el('h2', { text: 'Background' }),
-        paragraph('Follow-ups continue while the assistant server is running. Permission requests wait here until you decide or they expire.'),
+        paragraph('Follow-ups continue while the assistant server is running. Questions and permission requests wait until you respond or they expire.'),
+        el('section', { class: 'assistant-records', 'aria-label': 'Questions' }, el('h3', { text: 'Questions' }),
+          this.questionsScope !== this.scope ? paragraph('Questions could not be verified. Reload before answering.', 'small dim') : questions.length ?
+            (this.quickBody ? paragraph('Questions are shown in Quick chat.', 'small dim') : questions.map((row) => this.questionCard(row))) : paragraph('No questions waiting.', 'small dim')),
         el('section', { class: 'assistant-records', 'aria-label': 'Permission requests' },
           el('h3', { text: 'Permission requests' }), approvals.length ? (this.quickBody ? paragraph('Requests are shown in Quick chat.', 'small dim') : approvals.map((approval) => this.approvalCard(approval))) : paragraph('No permission requests waiting.', 'small dim')),
         el('section', { class: 'assistant-records', 'aria-label': 'Follow-ups' }, el('h3', { text: 'Follow-ups' }),
