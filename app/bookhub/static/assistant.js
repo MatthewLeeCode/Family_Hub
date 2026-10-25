@@ -14,6 +14,20 @@ const AssistantUI = (() => {
   const drafts = new Map();
   const selections = new Map();
   const inFlight = new Map();
+  const connectionOperations = new Map();
+  const controlTabs = ['background', 'memory', 'activity', 'permissions', 'connections'];
+  const connectionLabels = { ready: 'Ready', offline: 'Offline', review_required: 'Review required', disabled: 'Disabled', checking: 'Checking' };
+  const connectionReasons = {
+    ready: 'The reviewed connection is available.', checking: 'Checking the reviewed connection.',
+    disabled_by_user: 'Disabled for your account in this workspace.',
+    disabled_by_operator: 'Disabled on the assistant server. An operator must enable it.',
+    not_reviewed: 'This connection needs operator review before it can be used.',
+    artifact_review_required: 'The connection software or configuration changed. Operator review is required.',
+    tool_review_required: 'The available tools changed. Operator review is required.',
+    artifact_unavailable: 'The reviewed connection software is unavailable.',
+    discovery_failed: 'The connection did not answer its health check.', probe_timeout: 'The health check timed out.',
+    not_configured: 'This connection is not configured on the assistant server.'
+  };
   const identityKey = () => identityEpoch + ':' + String(familyOwner) + ':' + String(coreOwner);
   const pathId = (id) => encodeURIComponent(id);
   const list = (value) => Array.isArray(value) ? value : [];
@@ -22,7 +36,7 @@ const AssistantUI = (() => {
   const prettyArgs = (args) => { try { return JSON.stringify(JSON.parse(args), null, 2); } catch (_) { return String(args); } };
   const running = (job) => ['queued', 'running', 'retry', 'waiting_approval'].includes(job.status);
 
-  function clearPrivateState() { identityEpoch++; drafts.clear(); selections.clear(); inFlight.clear(); coreOwner = null; selectedScope = ''; }
+  function clearPrivateState() { identityEpoch++; drafts.clear(); selections.clear(); inFlight.clear(); connectionOperations.clear(); coreOwner = null; selectedScope = ''; }
   function sessionChanged() {
     clearPrivateState(); familyContext = null;
     if (active) active.sessionChanged();
@@ -37,7 +51,7 @@ const AssistantUI = (() => {
     if (quickWanted && !assistantRoute() && !active) openQuick(false).catch(oops);
   }
   const assistantRoute = () => /^#\/?assistant(?:\/|$)/.test(location.hash);
-  const fullChatRoute = () => assistantRoute() && !['background', 'memory', 'activity', 'permissions'].includes(location.hash.replace(/^#\/?/, '').split('/')[1]);
+  const fullChatRoute = () => assistantRoute() && !controlTabs.includes(location.hash.replace(/^#\/?/, '').split('/')[1]);
   function updateLauncher() {
     if (!launcher) {
       launcher = el('button', { class: 'assistant-quick-launcher', type: 'button', text: 'Quick chat',
@@ -100,11 +114,12 @@ const AssistantUI = (() => {
 
   class View {
     constructor(tab, quickOnly = false) {
-      this.tab = ['background', 'memory', 'activity', 'permissions'].includes(tab) ? tab : 'chat';
+      this.tab = controlTabs.includes(tab) ? tab : 'chat';
       this.context = familyContext;
       this.quickOnly = quickOnly; this.quickFrame = null; this.quickBody = null; this.scopeSelectors = [];
       this.alive = true; this.timer = null; this.snapshot = null; this.scope = selectedScope; this.selected = ''; this.chat = null;
       this.selectionVersion = 0; this.stateVersion = 0; this.refreshing = null; this.switching = false; this.pending = new Set(); this.transcriptNodes = new Map();
+      this.connectionRows = []; this.connectionsScope = null; this.connectionsSignature = ''; this.connectionsNeedsReload = false;
       this.root = el('div', { class: 'assistant-view' });
       this.notice = el('p', { class: 'assistant-notice small', role: 'status', 'aria-live': 'polite' });
       this.body = el('div', { class: 'assistant-body', tabindex: -1 });
@@ -144,6 +159,8 @@ const AssistantUI = (() => {
           clearPrivateState(); this.acceptContext(error.context);
         } else if (error.status === 401 || error.code === 'assistant_session_changed') {
           sessionChanged();
+          if (typeof InboxUI !== 'undefined') InboxUI.sessionChanged();
+          if (typeof NotesUI !== 'undefined') NotesUI.sessionChanged();
           throw new Stale('sign-in changed');
         }
         throw error;
@@ -250,10 +267,7 @@ const AssistantUI = (() => {
         const previousScope = this.scope;
         if (!list(snapshot.spaces).some((s) => s.id === this.scope)) this.scope = snapshot.user.private_space;
         if (!list(snapshot.spaces).some((s) => s.id === this.scope)) this.scope = list(snapshot.spaces)[0]?.id || '';
-        if (this.tab === 'permissions' && previousScope !== this.scope) {
-          this.grantsScope = null;
-          fill(this.body, paragraph('Loading permissions for this workspace…', 'small dim'));
-        }
+        if (previousScope !== this.scope) this.clearScopedControls();
         selectedScope = this.scope;
         if (!this.scopeSelect) this.buildControls();
         this.scopeSelectors.forEach((select) => { select.value = this.scope; });
@@ -273,6 +287,7 @@ const AssistantUI = (() => {
           await this.loadChat();
         }
         if (this.tab === 'permissions') await this.loadGrants();
+        else if (this.tab === 'connections') await this.loadConnections();
         else if (this.tab !== 'chat') this.renderBackground();
       })();
       try { await this.refreshing; } finally { this.refreshing = null; }
@@ -283,10 +298,7 @@ const AssistantUI = (() => {
         const hadFocus = document.activeElement === select;
         this.switching = true; this.stateVersion++;
         this.scope = select.value; selectedScope = this.scope; this.selected = ''; this.chat = null; this.selectionVersion++;
-        if (this.tab === 'permissions') {
-          this.grantsScope = null;
-          fill(this.body, paragraph('Loading permissions for this workspace…', 'small dim'));
-        }
+        this.clearScopedControls();
         if (this.transcript) { this.transcriptNodes.clear(); fill(this.transcript); this.composer.value = drafts.get(this.scope) || ''; }
         this.backgroundSignature = ''; this.conversationSignature = '';
         this.updateComposer();
@@ -307,7 +319,7 @@ const AssistantUI = (() => {
         fill(this.controls, field('Workspace', select), paragraph('Connected as ' + this.snapshot.user.name, 'small dim'));
         return;
       }
-      const controlsLinks = [['background', 'Background'], ['memory', 'Memory'], ['activity', 'Activity'], ['permissions', 'Permissions']].map(([id, title]) =>
+      const controlsLinks = [['background', 'Background'], ['memory', 'Memory'], ['activity', 'Activity'], ['permissions', 'Permissions'], ['connections', 'Connections']].map(([id, title]) =>
         el('a', { href: '#/assistant/' + id, 'aria-current': this.tab === id ? 'page' : null, text: title }));
       fill(this.controls,
         el('div', { class: 'row between' }, el('div', {}, el('h1', { text: 'Assistant' }),
@@ -494,6 +506,133 @@ const AssistantUI = (() => {
       const button = el('button', { class: cls, type: 'button', text: label, 'data-focus-key': key,
         'data-operation': operation, disabled: this.pending.has(operation), onclick: () => this.act(key, path, body, button) });
       return button;
+    }
+    clearScopedControls() {
+      if (this.tab === 'permissions') {
+        this.grantsScope = null;
+        fill(this.body, paragraph('Loading permissions for this workspace…', 'small dim'));
+      } else if (this.tab === 'connections') {
+        this.connectionsScope = null; this.connectionsSignature = ''; this.connectionRows = []; this.connectionsNeedsReload = false;
+        this.announce('');
+        fill(this.body, paragraph('Loading connections for this workspace…', 'small dim'));
+      }
+    }
+    validConnection(row, scope, id = null) {
+      return row && /^[A-Za-z0-9_-]{1,128}$/.test(row.id || '') && row.space_id === scope && (!id || row.id === id) &&
+        Object.hasOwn(connectionLabels, row.status) && Number.isSafeInteger(row.revision) && row.revision >= 1 &&
+        ['enabled', 'operator_disabled', 'user_disabled', 'can_retry', 'can_enable', 'can_disable'].every((key) => typeof row[key] === 'boolean') &&
+        row.enabled === (!row.operator_disabled && !row.user_disabled) && (row.status === 'disabled') !== row.enabled &&
+        !(row.operator_disabled && row.can_enable) && Number.isSafeInteger(row.tool_count) && row.tool_count >= 0 &&
+        (row.last_checked_at === null || (Number.isSafeInteger(row.last_checked_at) && row.last_checked_at >= 0 && row.last_checked_at <= 8640000000000000));
+    }
+    connectionsUnavailable(message, requireReload = false) {
+      const hadFocus = this.body.contains(document.activeElement);
+      this.connectionsScope = null; this.connectionsSignature = ''; this.connectionRows = []; this.connectionsNeedsReload = requireReload;
+      fill(this.body, el('h2', { text: 'Connections' }), paragraph(message, 'bad'),
+        el('button', { class: 'btn', type: 'button', text: 'Reload connection status', 'data-focus-key': 'reload-connections', onclick: async (event) => {
+          const button = event.currentTarget;
+          if (!this.live() || !button.isConnected || button.disabled || this.switching) return;
+          const hadFocus = document.activeElement === button, scope = this.scope;
+          button.disabled = true; this.connectionsNeedsReload = false;
+          try { await this.refresh(); } catch (error) { this.error(error); }
+          finally {
+            button.disabled = false;
+            if (hadFocus && this.live() && scope === this.scope && !button.isConnected && (!document.activeElement || document.activeElement === document.body)) this.body.focus({ preventScroll: true });
+          }
+        } }));
+      if (hadFocus) this.body.querySelector('button')?.focus({ preventScroll: true });
+    }
+    async loadConnections() {
+      if (this.connectionsNeedsReload) return;
+      const scope = this.scope, version = this.stateVersion;
+      const current = () => this.live() && scope === this.scope && version === this.stateVersion;
+      try {
+        const result = await this.request('GET', 'connections?space_id=' + encodeURIComponent(scope));
+        if (!current()) return;
+        if (!Array.isArray(result.connections) || result.connections.some((row) => !this.validConnection(row, scope)) ||
+            new Set(result.connections.map((row) => row.id)).size !== result.connections.length) throw new Error('Connection status could not be loaded for this workspace.');
+        this.connectionRows = result.connections; this.connectionsScope = scope; this.renderConnections();
+      } catch (error) {
+        if (current() && !(error instanceof Stale)) this.connectionsUnavailable(error.message);
+      }
+    }
+    renderConnections() {
+      if (this.connectionsScope !== this.scope) return;
+      const signature = JSON.stringify([this.scope, this.connectionRows, this.connectionRows.map((row) => connectionOperations.get(row.space_id + ':' + row.id)?.action || '')]);
+      if (signature === this.connectionsSignature) return;
+      this.connectionsSignature = signature;
+      replacePreservingFocus(this.body, el('h2', { text: 'Connections' }),
+        paragraph('Connections available to your account in this workspace. Being connected does not grant permission to use a tool.'),
+        el('div', { class: 'assistant-records' }, this.connectionRows.length ? this.connectionRows.map((row) => this.connectionCard(row)) :
+          paragraph('No connections are configured for your account in this workspace.')),
+        paragraph('Retry checks the reviewed connection without calling its tools. Software and tool changes need operator review on the assistant server.', 'small dim'));
+    }
+    connectionCard(row) {
+      const busy = connectionOperations.get(row.space_id + ':' + row.id);
+      const status = el('p', { class: 'small dim', role: 'status', text: busy ? (busy.action === 'retry' ? 'Checking connection…' : 'Updating connection…') : '' });
+      const confirmation = el('div', { class: 'assistant-connection-confirm', hidden: true });
+      const action = (label, name, handler) => el('button', { class: 'btn sm', type: 'button', text: label,
+        'aria-label': label + ' ' + row.id, 'data-focus-key': 'connection-' + row.id + '-' + name, disabled: !!busy,
+        onclick: (event) => handler(event.currentTarget) });
+      const controls = el('div', { class: 'row assistant-connection-actions' });
+      const card = el('article', { class: 'panel cut assistant-connection', 'data-connection-id': row.id, tabindex: -1 },
+        el('div', { class: 'row between' }, el('h3', { text: row.id }), el('span', { class: 'assistant-connection-status', text: connectionLabels[row.status] })),
+        paragraph(Object.hasOwn(connectionReasons, row.reason_code) ? connectionReasons[row.reason_code] : 'The connection status is unavailable.', 'small dim'),
+        paragraph(row.tool_count + ' configured ' + (row.tool_count === 1 ? 'tool' : 'tools') + ' · ' +
+          (row.last_checked_at === null ? 'Not checked yet' : 'Last checked ' + dateTime(row.last_checked_at)), 'small dim'),
+        controls, confirmation, status);
+      if (row.can_retry) controls.append(action('Retry', 'retry', () => this.controlConnection(row, 'retry', card, status)));
+      if (row.can_enable && !row.operator_disabled) controls.append(action('Enable connection', 'enable', () => this.controlConnection(row, 'enable', card, status)));
+      if (row.can_disable) {
+        const disable = action('Disable connection', 'disable', () => {
+          if (!card.isConnected || this.switching || this.scope !== row.space_id || connectionOperations.has(row.space_id + ':' + row.id)) return;
+          confirmation.hidden = false; confirmation.querySelector('button').focus({ preventScroll: true });
+        });
+        controls.append(disable);
+        fill(confirmation, paragraph('Disabling revokes this connection’s standing permissions and pending approvals. Enabling it later does not restore those permissions. Already-dispatched work cannot be undone.', 'small'),
+          el('div', { class: 'row' }, action('Disable and revoke access', 'confirm-disable', () => this.controlConnection(row, 'disable', card, status)),
+            action('Cancel', 'cancel-disable', () => { confirmation.hidden = true; disable.focus({ preventScroll: true }); })));
+      }
+      if (row.can_enable) card.append(paragraph('Enabling does not restore revoked permissions or accept software or tool changes.', 'small dim'));
+      return card;
+    }
+    async controlConnection(row, action, card, status) {
+      const operation = row.space_id + ':' + row.id;
+      if (!this.live() || this.switching || !card.isConnected || this.scope !== row.space_id || this.connectionsScope !== row.space_id ||
+          !row['can_' + action] || (action === 'enable' && row.operator_disabled) || connectionOperations.has(operation)) return;
+      const token = Symbol(operation), scope = this.scope, version = ++this.stateVersion;
+      const hadFocus = card.contains(document.activeElement), focusKey = document.activeElement?.dataset.focusKey;
+      const current = () => this.live() && this.scope === scope && version === this.stateVersion;
+      connectionOperations.set(operation, { token, action }); this.pending.add('connection-' + row.id);
+      this.connectionsSignature = '';
+      card.querySelectorAll('button').forEach((button) => { button.disabled = true; });
+      status.textContent = action === 'retry' ? 'Checking connection…' : 'Updating connection…';
+      try {
+        const result = await this.request('POST', 'connections/' + pathId(row.id) + '/control', { space_id: scope, expected_revision: row.revision, action });
+        if (!current()) return;
+        if (!this.validConnection(result, scope, row.id)) throw new Error('The connection returned an invalid status. Reload before trying again.');
+        this.connectionRows = this.connectionRows.map((item) => item.id === row.id ? result : item);
+        this.announce(action === 'disable' ? 'Connection disabled. Its permissions and pending approvals were revoked. Already-dispatched work cannot be undone.' :
+          action === 'enable' ? 'Connection enabled. Revoked permissions were not restored; check its status before use.' : 'Connection checked. No tools were called.');
+      } catch (error) {
+        if (current() && !(error instanceof Stale)) this.connectionsUnavailable(error.status === 409 ?
+          'This connection changed elsewhere. Reload its status before trying again.' :
+          'The connection action could not be confirmed. Reload its status before trying again.', true);
+      } finally {
+        if (connectionOperations.get(operation)?.token === token) connectionOperations.delete(operation);
+        this.pending.delete('connection-' + row.id);
+        if (current()) {
+          const restoreFocus = hadFocus && (!document.activeElement || document.activeElement === document.body || card.contains(document.activeElement));
+          if (this.connectionsScope === scope) {
+            this.connectionsSignature = ''; this.renderConnections();
+            if (restoreFocus) {
+              const target = Array.from(this.body.querySelectorAll('[data-focus-key]')).find((node) => node.dataset.focusKey === focusKey) ||
+                Array.from(this.body.querySelectorAll('[data-connection-id]')).find((node) => node.dataset.connectionId === row.id);
+              (target || this.body).focus({ preventScroll: true });
+            }
+          } else if (restoreFocus) this.body.querySelector('button')?.focus({ preventScroll: true });
+        }
+      }
     }
     async loadGrants(force = false) {
       if (!force && this.grantsScope === this.scope) return;

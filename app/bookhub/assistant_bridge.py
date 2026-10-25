@@ -44,7 +44,7 @@ def usable_profile():
     return None
 
 
-def call(method, path, data=None, login=False):
+def call(method, path, data=None, login=False, project=None):
     token = session.get("assistant_token")
     if not login and not token:
         return fail("Sign in to your assistant account.", 401)
@@ -91,6 +91,11 @@ def call(method, path, data=None, login=False):
             return jsonify({"user": payload, "context": view_context()})
         if token and token in json.dumps(payload):
             return fail("The assistant returned an invalid response.", 502)
+        if project:
+            try:
+                payload = project(payload)
+            except (KeyError, TypeError, ValueError):
+                return fail("The assistant returned an invalid connection status.", 502)
         return jsonify(payload), response.status_code
     except (requests.RequestException, requests.cookies.CookieConflictError, ValueError):
         # Exceptions can include URL/header details; never send them to the browser.
@@ -145,6 +150,79 @@ def logout(who):
         return denied
     disconnect()
     return jsonify({"ok": True, "context": view_context()})
+
+
+def connection_payload(payload, space_id, item=None):
+    """Project only the public health contract; never forward connector config."""
+    def row(value):
+        if not isinstance(value, dict):
+            raise ValueError("Invalid connection")
+        if not isinstance(value.get("id"), str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", value["id"]):
+            raise ValueError("Invalid reference")
+        if value.get("space_id") != space_id or (item is not None and value["id"] != item):
+            raise ValueError("Unexpected scope")
+        if value.get("status") not in {"ready", "offline", "review_required", "disabled", "checking"}:
+            raise ValueError("Invalid status")
+        for name in ("enabled", "operator_disabled", "user_disabled", "can_retry", "can_enable", "can_disable"):
+            if type(value.get(name)) is not bool:
+                raise ValueError("Invalid control")
+        if value["enabled"] != (not value["operator_disabled"] and not value["user_disabled"]):
+            raise ValueError("Invalid enabled state")
+        if (value["status"] == "disabled") == value["enabled"] or (value["operator_disabled"] and value["can_enable"]):
+            raise ValueError("Invalid status controls")
+        for name, minimum in (("revision", 1), ("tool_count", 0)):
+            if type(value.get(name)) is not int or not minimum <= value[name] <= 9007199254740991:
+                raise ValueError("Invalid counter")
+        checked = value.get("last_checked_at")
+        if checked is not None and (type(checked) is not int or not 0 <= checked <= 8640000000000000):
+            raise ValueError("Invalid timestamp")
+        reasons = {"ready", "checking", "disabled_by_user", "disabled_by_operator", "not_reviewed",
+                   "artifact_review_required", "tool_review_required", "artifact_unavailable",
+                   "discovery_failed", "probe_timeout", "not_configured"}
+        fields = ("id", "space_id", "status", "reason_code", "revision", "enabled", "operator_disabled",
+                  "user_disabled", "last_checked_at", "tool_count", "can_retry", "can_enable", "can_disable")
+        public = {name: value.get(name) for name in fields}
+        public["reason_code"] = value.get("reason_code") if isinstance(value.get("reason_code"), str) and value["reason_code"] in reasons else "unavailable"
+        return public
+
+    if item is not None:
+        return row(payload)
+    values = payload.get("connections")
+    if not isinstance(values, list) or len(values) > 1024:
+        raise ValueError("Invalid connections")
+    rows = [row(value) for value in values]
+    if len({value["id"] for value in rows}) != len(rows):
+        raise ValueError("Duplicate connection")
+    return {"connections": rows}
+
+
+@bp.get("/connections")
+@bp.post("/connections/<string:item>/control")
+@profile_only
+def connections(who, item=None):
+    denied = usable_profile()
+    if denied:
+        return denied
+    if item is None:
+        if set(request.args) != {"space_id"} or len(request.args.getlist("space_id")) != 1:
+            return fail("Choose a workspace.")
+        space_id = request.args["space_id"]
+        body = None
+    else:
+        if not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", item) or request.args:
+            return fail("Invalid connection reference.")
+        if request.content_length and request.content_length > 4096:
+            return fail("That request is too large.", 413)
+        body = request.get_json(silent=True)
+        if not isinstance(body, dict) or set(body) != {"space_id", "expected_revision", "action"}:
+            return fail("Expected a connection action and its revision.")
+        if body["action"] not in ("retry", "enable", "disable") or type(body["expected_revision"]) is not int or not 1 <= body["expected_revision"] <= 9007199254740991:
+            return fail("Invalid connection action or revision.")
+        space_id = body["space_id"]
+    if not isinstance(space_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", space_id):
+        return fail("Choose a workspace.")
+    path = "connections/" + item + "/control" if item else "connections?" + urlencode({"space_id": space_id})
+    return call(request.method, path, body, project=lambda payload: connection_payload(payload, space_id, item))
 
 
 # Explicit path allowlist. No generic URL, arbitrary route or credential forwarding tool.

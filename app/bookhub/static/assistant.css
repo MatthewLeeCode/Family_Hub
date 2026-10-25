@@ -81,3 +81,9 @@
 .assistant-grant-choice input { width: auto; flex: 0 0 auto; margin-top: 3px; }
 .assistant-grant summary { cursor: pointer; overflow-wrap: anywhere; }
 .assistant-grant-form [hidden] { display: none; }
+:root .assistant-records .assistant-connection { display: grid; gap: 12px; padding: 18px; }
+.assistant-connection h3 { font-size: 1rem; overflow-wrap: anywhere; }
+.assistant-connection-status { border: 1px solid var(--line2); border-radius: 5px; padding: 4px 8px; font-size: .75rem; white-space: nowrap; }
+.assistant-connection-actions { flex-wrap: wrap; }
+.assistant-connection-confirm { display: grid; gap: 12px; border-top: 1px solid var(--line); padding-top: 12px; }
+.assistant-connection [role="status"]:empty, .assistant-connection-actions:empty { display: none; }

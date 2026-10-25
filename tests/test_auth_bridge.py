@@ -103,6 +103,85 @@ def test_permission_routes_reject_stale_context_before_core_dispatch(client, fak
     assert len(fake_core["calls"]) == before
 
 
+def connection(space="space-matt", item="notes-matt", **changes):
+    return {"id": item, "space_id": space, "status": "ready", "reason_code": "ready", "revision": 1,
+            "enabled": True, "operator_disabled": False, "user_disabled": False, "last_checked_at": None,
+            "tool_count": 2, "can_retry": True, "can_enable": False, "can_disable": True, **changes}
+
+
+def test_connection_routes_are_fixed_scoped_and_project_public_fields(client, fake_core):
+    link(client)
+    public = connection()
+    upstream = {**public, "command": "private/executable", "environment": {"API_KEY": "private-key"},
+                "tool_descriptions": ["private instructions"]}
+    fake_core["response"] = core_response({"connections": [upstream], "config": "private-config"})
+    response = client.get("/api/assistant/connections?space_id=space-matt")
+    assert response.status_code == 200
+    assert response.get_json() == {"connections": [public]}
+    assert fake_core["calls"][-1]["url"] == "http://127.0.0.1:4280/api/connections?space_id=space-matt"
+    assert response.headers["Cache-Control"] == "no-store"
+    fake_core["response"] = core_response(upstream)
+    for action in ("retry", "disable", "enable"):
+        body = {"space_id": "space-matt", "expected_revision": 1, "action": action}
+        response = client.post("/api/assistant/connections/notes-matt/control", json=body,
+                               headers={"Authorization": "Bearer browser-credential"})
+        assert response.status_code == 200
+        assert response.get_json() == public
+        call = fake_core["calls"][-1]
+        assert call["url"] == "http://127.0.0.1:4280/api/connections/notes-matt/control"
+        assert call["json"] == body
+        assert call["headers"] == {"X-Household-Request": "1", "Cookie": "household_session=" + core_token()}
+
+
+def test_connection_routes_reject_ambiguous_scope_and_unlisted_actions_before_dispatch(client, fake_core):
+    link(client)
+    before = len(fake_core["calls"])
+    for suffix in ("", "?space_id=space-matt&space_id=space-wife", "?space_id=../private", "?space_id=space-matt&url=https://evil.invalid"):
+        assert client.get("/api/assistant/connections" + suffix).status_code == 400
+    valid = {"space_id": "space-matt", "expected_revision": 1, "action": "retry"}
+    for body in ([], {}, {**valid, "action": "accept-review"}, {**valid, "expected_revision": True},
+                 {**valid, "expected_revision": 0}, {**valid, "expected_revision": "1"},
+                 {**valid, "expected_revision": 9007199254740992}, {**valid, "space_id": ["space-matt"]},
+                 {**valid, "space_id": "../private"}, {**valid, "url": "https://evil.invalid"}):
+        assert client.post("/api/assistant/connections/notes-matt/control", json=body).status_code == 400
+    assert client.post("/api/assistant/connections/notes-matt/control?space_id=space-wife", json=valid).status_code == 400
+    for path in ("notes-matt/accept", "notes-matt/config", "../control", "notes;secret/control"):
+        assert client.post("/api/assistant/connections/" + path, json=valid).status_code in (400, 404)
+    assert client.post("/api/assistant/connections/notes-matt/control", json={**valid, "extra": "x" * 5000}).status_code == 413
+    assert len(fake_core["calls"]) == before
+
+
+@pytest.mark.parametrize("rows", [
+    [connection(space="space-wife")], [connection(), connection()],
+    [connection(operator_disabled=True, enabled=False, status="disabled", can_enable=True)],
+    [connection(revision=True)], [connection(tool_count=-1)], [connection(status="unexpected")],
+    [connection(last_checked_at="private/path")],
+])
+def test_connection_list_rejects_invalid_or_wrong_scope_status(client, fake_core, rows):
+    link(client)
+    fake_core["response"] = core_response({"connections": rows})
+    response = client.get("/api/assistant/connections?space_id=space-matt")
+    assert response.status_code == 502
+    assert "space-wife" not in response.get_data(as_text=True)
+    assert "private/path" not in response.get_data(as_text=True)
+
+
+def test_connection_control_rejects_wrong_item_and_sanitizes_unknown_reasons_and_conflicts(client, fake_core):
+    link(client)
+    body = {"space_id": "space-matt", "expected_revision": 1, "action": "retry"}
+    fake_core["response"] = core_response(connection(item="other-connection"))
+    assert client.post("/api/assistant/connections/notes-matt/control", json=body).status_code == 502
+    fake_core["response"] = core_response({"connections": [connection(reason_code="private executable/path")]})
+    response = client.get("/api/assistant/connections?space_id=space-matt")
+    assert response.status_code == 200
+    assert response.get_json()["connections"][0]["reason_code"] == "unavailable"
+    assert "private executable" not in response.get_data(as_text=True)
+    fake_core["response"] = core_response({"error": "private runtime credentials", "command": "/private/path"}, 409)
+    response = client.post("/api/assistant/connections/notes-matt/control", json=body)
+    assert response.status_code == 409
+    assert "private" not in response.get_data(as_text=True)
+
+
 def sid(client):
     return client.get_cookie("bookhub").value
 
@@ -220,12 +299,15 @@ def test_credentials_or_role_change_revokes_loaded_and_saved_sessions(app, clien
 
 def test_guest_and_admin_override_cannot_access_assistant(app, client, fake_core):
     client.post("/api/login", json={"guest": True})
-    for path in ["status", "state"]:
+    for path in ["status", "state", "connections?space_id=space-matt"]:
         assert client.get("/api/assistant/" + path).status_code == 403
+    assert client.post("/api/assistant/connections/notes-matt/control", json={"space_id": "space-matt", "expected_revision": 1, "action": "retry"}).status_code == 403
     assert client.post("/api/assistant/login", json={"login": "matt", "password": "x"}).status_code == 403
     ids = {p["name"]: p["id"] for p in client.get("/api/state").get_json()["profiles"]}
     client.post("/api/login", json={"profile_id": ids["Partner"], "admin_id": ids["You"], "admin_passcode": "1234"})
     assert client.get("/api/assistant/status").status_code == 403
+    assert client.get("/api/assistant/connections?space_id=space-matt").status_code == 403
+    assert client.post("/api/assistant/connections/notes-matt/control", json={"space_id": "space-matt", "expected_revision": 1, "action": "enable"}).status_code == 403
     assert client.post("/api/assistant/logout", json={}).status_code == 403
     assert fake_core["calls"] == []
     app.hub.con().execute("UPDATE profiles SET passcode_hash='revoked' WHERE id=?", (ids["You"],))
@@ -266,6 +348,8 @@ def test_old_tab_cannot_read_or_act_with_a_new_tabs_shared_cookie(app, client, f
     for method, path, body in [
         ("GET", "status", None), ("GET", "state", None),
         ("GET", "conversations/chat-shared", None),
+        ("GET", "connections?space_id=space-shared", None),
+        ("POST", "connections/notes-shared/control", {"space_id": "space-shared", "expected_revision": 1, "action": "disable"}),
         ("POST", "conversations", {"space_id": "space-shared"}),
         ("POST", "conversations/chat-shared/messages", {"text": "old private draft"}),
         ("POST", "approvals/pending-shared", {"decision": "allow"}),
