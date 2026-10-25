@@ -1,0 +1,50 @@
+# Assistant interface
+
+Family Hub now has an **Assistant** destination. It uses the separate Rust assistant server through Family Hub's same-origin bridge. The web interface presents the account's state and submits commands; agent execution, scheduling, approval expiry, authorisation and workspace membership remain server responsibilities.
+
+## Available now
+
+- Sign into an assistant account from an ordinary signed-in Family Hub profile. Guest and administrator-override sessions cannot use it. The temporary local demonstration accounts are `matt` / `demo-matt` and `alex` / `demo-alex`.
+- Switch between the account's private workspace and its shared spaces. The selected workspace follows navigation within Assistant.
+- Create conversations, send messages, retain unsent drafts while changing conversations or Assistant pages, and stop work. Enter sends; Shift + Enter inserts a line; IME composition does not accidentally submit. Drafts are kept in memory for the open page, not browser storage.
+- Browse conversations in a panel shown only on Chat. It is on the right on larger screens and below the conversation on narrower screens.
+- Open **Quick chat** at the bottom right from other destinations. It uses the same chat renderer, drafts, selected conversation, active job, stop action and permission status as the main view. Conversations are in a compact disclosure. **Expand** moves back to main Chat without submitting another request. Escape or Close collapses it and restores focus to the launcher.
+- Open **Assistant controls** for Background, Memory and Activity. Background is its own destination; the section starts collapsed on Chat.
+- Review pending approval arguments and expiry, allow an action once, or deny it. Answering a request does not create a standing permission.
+- Inspect follow-up reasons, instructions, stop conditions, event triggers and remaining checks. Pause, resume or cancel a follow-up subject to the core's permission checks. Updates include the current revision so a stale screen cannot silently overwrite a newer decision.
+- Read private remembered preferences and workspace activity. Shared spaces do not display the account's private memory.
+
+The core's deterministic test agent can summarise sample inboxes, save important attachments, make local drafts, remember explicitly requested preferences and schedule inbox checks. Those actions exercise the same server contracts a different agent can use. Family Hub has not gained a live Gmail/Outlook integration or a language model through this view.
+
+## Boundary and lifecycle
+
+`static/assistant.js` owns the view. It uses the common `api()` helper and the explicit `/api/assistant/` endpoints. It makes no direct browser calls to the core address. Family Hub stores the core session server-side; this view never writes passwords or tokens into local storage or URLs. A password field is cleared as soon as a sign-in request starts. Account/profile changes discard local draft and conversation-selection caches.
+
+Each view retains the public `assistant_context` returned by `/api/state` and sends it in `X-Assistant-Context`. The bridge rejects a stale context before reading or changing core state, even when another tab has already replaced the browser's shared cookie. Login/logout responses update only the initiating view's context. Other tabs receive a notification with no account data, clear private chat content and show **Reload Family Hub**. A rejected context or expired session also clears the view. This applies equally to main and quick chat; it prevents a draft composed for one account from being sent using a later account's cookie.
+
+While an Assistant view or quick chat is active, updates are polled every 2.5 seconds, with one controller and one refresh running at a time. A quick chat beside Background shares its controller and snapshot with that page. Hidden documents skip polling. Quick chat stays mounted while navigating unrelated Family Hub pages; closing the last assistant surface cancels its timer. Mutations invalidate older snapshots; workspace changes disable the composer until the new conversation is loaded. Duplicate sends and conflicting answers to the same approval are suppressed locally. The server still performs the authoritative checks.
+
+Opening or expanding a conversation does not submit a message. A send already in progress keeps its acknowledgement when its view is moved or closed, clears the accepted draft and retains the same conversation ID. A shared in-memory submission guard prevents a newly mounted surface from sending again while that request is pending. Profile/account changes discard this state; a stale quick chat displays a reload notice with no previous conversation content. The renderer checks view lifetime before touching the DOM; message submission checks account lifetime before updating shared state.
+
+Messages and tool arguments are rendered as text, never HTML. Message updates preserve the composer and its draft. Background updates preserve expanded details and keyboard focus; if the acted-on control disappears, focus moves to the containing view. Expired approvals lose their Allow button even when the surrounding data has not changed.
+
+All looks use this same view and command path. Colours, typography and spacing come from the current Family Hub look. The optional Quiet layout uses flat surfaces without gradients or the original grain overlay.
+
+## Remaining work
+
+The first Family Hub slice includes main/quick chat, approvals, follow-ups and read-only memory/activity. The Rust demo's inbox, attachment browser, calendar, to-do and notes views still need corresponding Family Hub destinations and bridge commands. Rich text rendering, attachment input, search, memory deletion, permission-policy editing and stronger account linking are subsequent slices. Main and quick chat have identical current chat capabilities; neither currently accepts attachments or provides rich text rendering. Calendar and other agent-facing tools should be exposed through the core capability registry, with Family Hub supplying a scoped UI/domain adapter where appropriate.
+
+Do not treat these local demo credentials or the existing Family Hub short passcodes as production authentication. The deployment and identity plan covers stronger credentials, account linking, transport security, passkeys and recovery separately.
+
+## Validation
+
+`tests/test_personal_looks.py` covers authentication, role preservation, cross-profile isolation, field inheritance, malformed input, stale revisions, deletion and safe fallback. Run it with a writable local pytest directory on Windows:
+
+```powershell
+.venv/Scripts/python.exe -m pytest -q tests/test_personal_looks.py --basetemp .test-runs/personal-looks-check
+.venv/Scripts/python.exe -m pytest -q tests/test_auth_bridge.py --basetemp .test-runs/auth-bridge-check
+node --check app/bookhub/static/app.js
+node --check app/bookhub/static/assistant.js
+```
+
+Browser checks use synthetic local data: sign-in, appearance save/preview reset, Quiet at 360 and 800 pixels, Compact desktop navigation, new chat and agent response, private/shared separation, exact-argument approval denial, shared follow-up creation/pause/cancellation, and keyboard focus after actions. Full → quick → full preserves an unsent draft. Sending immediately before expanding created exactly one user message and one server job, verified through the core API. Quick chat remains mounted through ordinary page navigation, shows waiting permissions, stops the pending job and updates Background from the same state. Its workspace selector stays in sync with Background. Closing restores launcher focus. Signing out removes quick chat, requires a fresh core sign-in and clears the previous shared-space draft. The quick panel was also checked at 360 pixels. The permissions changed for the approval tests are restored after each check, and the synthetic watcher is cancelled.

@@ -29,21 +29,27 @@ def create_app(config=None):
         SECRET_KEY=_secret_key(config.data_dir),
         SESSION_COOKIE_NAME="bookhub",
         SESSION_COOKIE_HTTPONLY=True,
-        SESSION_COOKIE_SAMESITE="Lax",
+        SESSION_COOKIE_SAMESITE="Strict",
+        SESSION_COOKIE_SECURE=config.secure_cookies,
         PERMANENT_SESSION_LIFETIME=timedelta(days=30),
         MAX_CONTENT_LENGTH=64 * 1024 * 1024,
     )
     app.hub = Hub(config)
 
-    from . import api, kosync, opds
+    from . import api, kosync, opds, secure_sessions, assistant_bridge, personal_looks
+    secure_sessions.install(app)
     app.register_blueprint(api.bp)
+    app.register_blueprint(personal_looks.bp)
+    app.register_blueprint(assistant_bridge.bp)
     app.register_blueprint(kosync.bp)
     app.register_blueprint(opds.bp)
 
     @app.get("/")
     def index():
         html = (static / "index.html").read_text(encoding="utf-8")
-        return looks.page(html, looks.current(app.hub.con())), 200, {"Cache-Control": "no-cache"}
+        who = api.me()
+        look = looks.for_profile(app.hub.con(), who["id"] if who not in (None, "guest") else None)
+        return looks.page(html, look), 200, {"Cache-Control": "no-store"}
 
     @app.teardown_appcontext
     def finish_db(exc):

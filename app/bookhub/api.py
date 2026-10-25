@@ -18,6 +18,7 @@ from flask import Blueprint, Response, current_app, jsonify, request, send_file,
 from werkzeug.security import check_password_hash, generate_password_hash
 
 from . import bookfix, calibre, catalogues, covers, db, devices, duplicates, goodreads, integrations, kinds, kosync, looks, media, mediasort, readers, recommend, secondcopy, series, settings
+from . import secure_sessions
 
 bp = Blueprint("api", __name__, url_prefix="/api")
 
@@ -199,6 +200,7 @@ def state():
     blocked = series.blocked_ids(h)
     return jsonify({
         "setup_needed": not profiles,
+        "assistant_context": secure_sessions.view_context(),
         "me": None if who is None else ({"guest": True, "name": "Guest"} if who == "guest" else
                                         dict(public_profile(who, True, blocked), via_admin=bool(session.get("via_admin")))),
         "profiles": [public_profile(p, blocked=blocked) for p in profiles],
@@ -210,7 +212,7 @@ def state():
         "can_convert": bool(shutil.which("ebook-convert")),
         "kinds": kinds.KINDS,
         "device_kinds": devices.KINDS,
-        "look": looks.current(h.con()),
+        "look": looks.for_profile(h.con(), who["id"] if who not in (None, "guest") else None),
         "media": {"films": h.media.configured("film"), "shows": h.media.configured("show"),
                   "jellyfin": bool(h.config.jellyfin_url and h.config.jellyfin_api_key)},
     })
@@ -231,9 +233,7 @@ def setup():
         (name, generate_password_hash(passcode), COLORS[0], db.now()),
     )
     con.commit()
-    session.clear()
-    session["pid"] = cur.lastrowid
-    session.permanent = True
+    secure_sessions.establish_session(cur.lastrowid)
     return jsonify({"ok": True})
 
 
@@ -246,8 +246,9 @@ def login():
             return fail("Guest access is turned off.", 403)
         if h.config.guest_lan_only and not on_home_network():
             return fail("Guest access only works on the home network.", 403)
-        session.clear()
-        session["pid"] = "guest"
+        from .assistant_bridge import disconnect
+        disconnect()
+        secure_sessions.establish_session("guest")
         return jsonify({"ok": True})
     target = h.profile(data.get("profile_id") or 0)
     if not target:
@@ -268,15 +269,17 @@ def login():
         return fail("Too many wrong tries. Wait a minute and try again.", 429)
     if not ok:
         return fail("That passcode is not right.", 403)
-    session.clear()
-    session["pid"] = target["id"]
-    session["via_admin"] = via_admin
-    session.permanent = True
+    from .assistant_bridge import disconnect
+    disconnect()
+    secure_sessions.establish_session(target["id"], via_admin, target_stamp=secure_sessions.profile_stamp(target),
+                                      authenticator=admin if via_admin else None)
     return jsonify({"ok": True})
 
 
 @bp.post("/logout")
 def logout():
+    from .assistant_bridge import disconnect
+    disconnect()
     session.clear()
     return jsonify({"ok": True})
 

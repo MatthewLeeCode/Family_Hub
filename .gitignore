@@ -18,6 +18,7 @@ secret.key
 __pycache__/
 *.pyc
 .pytest_cache/
+.test-runs/
 
 # Editors and systems
 .DS_Store

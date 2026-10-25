@@ -32,17 +32,27 @@ function el(tag, props, ...kids) {
 // draw over the new one, so a GET that finishes after the move throws Stale and that page stops.
 let routeGen = 0;
 class Stale extends Error {}
-async function api(method, url, body) {
+const sessionNotice = typeof BroadcastChannel === 'function' ? new BroadcastChannel('family-hub-session') : null;
+if (sessionNotice) sessionNotice.onmessage = (event) => {
+  if (event.data === 'changed') AssistantUI.sessionChanged();
+};
+async function api(method, url, body, isActive, headers = {}) {
   const gen = routeGen;
-  const opts = { method, headers: {}, credentials: 'same-origin' };
+  const opts = { method, headers: { ...headers }, credentials: 'same-origin' };
   if (body instanceof FormData) opts.body = body;
   else if (body !== undefined) { opts.headers['Content-Type'] = 'application/json'; opts.body = JSON.stringify(body); }
   const res = await fetch(url, opts);
   let data = null;
   try { data = await res.json(); } catch (e) { /* no body */ }
+  if (method === 'POST' && ['/api/login', '/api/logout', '/api/assistant/login', '/api/assistant/logout'].includes(url) &&
+      (res.ok || data?.context)) sessionNotice?.postMessage('changed');
   // Moved to another page meanwhile: a save still happened, but nothing may redraw the old page over the new one.
-  if (gen !== routeGen) throw new Stale('moved on');
-  if (!res.ok) throw new Error((data && data.error) || 'Something went wrong (' + res.status + ').');
+  if (isActive ? !isActive() : gen !== routeGen) throw new Stale('moved on');
+  if (!res.ok) {
+    const error = new Error((data && data.error) || 'Something went wrong (' + res.status + ').');
+    error.status = res.status; error.code = data?.code; error.context = data?.context;
+    throw error;
+  }
   return data;
 }
 
@@ -124,6 +134,7 @@ function setMain(...kids) { const m = main(); m.replaceChildren(...kids.flat().f
 // The sections in the sidebar, with the design's line icons.
 const SECTIONS = [
   ['home', 'Home', '#/home', 'M3 11l9-7 9 7v9h-6v-6H9v6H3z'],
+  ['assistant', 'Assistant', '#/assistant', 'M4 4h16v12H9l-5 4zM8 8h8M8 12h5'],
   ['movies', 'Movies and TV Shows', '#/movies', 'M3 5h18v14H3zM7 5v14M17 5v14M3 9h4M3 15h4M17 9h4M17 15h4'],
   ['books', 'Books', '#/library', 'M4 4h7a2 2 0 0 1 1 1 2 2 0 0 1 1-1h7v15h-7a2 2 0 0 0-1 1 2 2 0 0 0-1-1H4zM12 5v15'],
   ['downloads', 'Downloads', '#/downloads', 'M12 4v11M7 10l5 5 5-5M5 20h14'],
@@ -141,7 +152,7 @@ function starMark() {
   return svg;
 }
 // Which section each page belongs to, and the tabs along the top of that section.
-const PAGE_SECTION = { home: 'home', movies: 'movies', downloads: 'downloads', photos: 'photos', files: 'files', admin: 'admin', sort: 'admin', tags: 'admin', copies: 'admin' };
+const PAGE_SECTION = { home: 'home', assistant: 'assistant', movies: 'movies', downloads: 'downloads', photos: 'photos', files: 'files', appearance: 'appearance', admin: 'admin', sort: 'admin', tags: 'admin', copies: 'admin' };
 function sectionTabs(section) {
   if (section === 'books') {
     const t = [['library', 'Library', '#/library']];
@@ -152,7 +163,7 @@ function sectionTabs(section) {
   if (section === 'movies') return mediaTabs();
   return [];
 }
-const SECTION_LOGO = { home: 'Home', movies: 'Movies and TV', downloads: 'Downloads', books: 'Books', photos: 'Photos', files: 'Files', admin: 'Admin', profiles: 'Family Hub' };
+const SECTION_LOGO = { home: 'Home', assistant: 'Assistant', movies: 'Movies and TV', downloads: 'Downloads', books: 'Books', photos: 'Photos', files: 'Files', appearance: 'Your appearance', admin: 'Admin', profiles: 'Family Hub' };
 
 // Put the household's chosen colour scheme and accent in place, if the page is not showing them already.
 function applyLook(look) {
@@ -164,6 +175,7 @@ function applyLook(look) {
     root.dataset.design = look.design;
   }
   root.dataset.theme = look.theme;
+  root.dataset.layout = look.layout || 'family';
   setAccent(look.accent);
 }
 
@@ -180,13 +192,14 @@ function shell(section, tab) {
   applyLook(S.look);
   const signedIn = !!S.me;
   document.getElementById('shell').classList.toggle('signed-out', !signedIn);
-  const sections = SECTIONS.filter(([k]) => (k !== 'admin' || isAdmin()) && ((k !== 'movies' && k !== 'downloads') || !isGuest()));
+  const sections = SECTIONS.filter(([k]) => (k !== 'admin' || isAdmin()) && (!['movies', 'downloads', 'assistant'].includes(k) || !isGuest()));
   fill(document.getElementById('side'),
     el('div', { class: 'hub glow' }, starMark(), 'Family Hub'),
     el('nav', { 'aria-label': 'Family Hub sections' }, sections.map(([k, label, href, d]) =>
       el('a', { href, 'aria-current': section === k ? 'page' : null }, sectionIcon(d), el('span', { text: label })))),
     signedIn ? el('div', { class: 'sidefoot lab' }, isGuest() ? 'Guest · nothing is tracked' : S.me.name + ' · ' + (isAdmin() ? 'Admin' : 'Member'),
-      S.me.via_admin ? el('br') : null, S.me.via_admin ? 'Opened by an admin' : null) : null);
+      S.me.via_admin ? el('br') : null, S.me.via_admin ? 'Opened by an admin' : null,
+      !isGuest() ? el('a', { href: '#/appearance', class: 'profile-look-link', 'aria-current': section === 'appearance' ? 'page' : null, text: 'Your appearance' }) : null) : null);
   const tabs = sectionTabs(section);
   fill(document.getElementById('top'),
     el('div', { class: 'logo glow' }, section === 'profiles' ? starMark() : null, SECTION_LOGO[section] || 'Family Hub'),
@@ -195,7 +208,7 @@ function shell(section, tab) {
     signedIn ? el('a', { class: 'who', href: '#/profiles' },
       el('span', { class: 'arch', 'aria-hidden': 'true', text: S.me.name[0].toUpperCase() }),
       el('span', { text: S.me.name + ' · switch' })) : null);
-  const where = section === 'profiles' ? 'Profiles' : (SECTIONS.find((s) => s[0] === section) || [0, 'Home'])[1];
+  const where = section === 'profiles' ? 'Profiles' : section === 'appearance' ? 'Your appearance' : (SECTIONS.find((s) => s[0] === section) || [0, 'Home'])[1];
   document.getElementById('strip').replaceChildren(el('span', { text: 'Family Hub' + S.look.sep + where }));
   // The browser tab and screen readers name the section too.
   document.title = pageTitle = where + ' · Family Hub';
@@ -208,12 +221,14 @@ function shell(section, tab) {
 let lastHash = null;
 async function route() {
   routeGen++;
+  AssistantUI.leave();
   try { S = await api('GET', '/api/state'); } catch (e) { if (e instanceof Stale) return; setMain(el('p', { class: 'bad', text: e.message })); return; }
+  AssistantUI.identity(S.me?.id, S.assistant_context);
   const parts = location.hash.replace(/^#\/?/, '').split('/');
   let page = parts[0] || (S.me ? 'home' : 'profiles');
   if (S.setup_needed) { shell('profiles'); return pageSetup(); }
   if (!S.me) page = 'profiles';
-  if (isGuest() && ['dashboard', 'mybooks', 'admin', 'sort', 'tags', 'copies', 'discover', 'devices', 'series', 'read', 'movies', 'downloads'].includes(page)) page = 'library';
+  if (isGuest() && ['dashboard', 'mybooks', 'admin', 'sort', 'tags', 'copies', 'discover', 'devices', 'series', 'read', 'movies', 'downloads', 'appearance', 'assistant'].includes(page)) page = 'library';
   if (!S.series && (page === 'series' || page === 'read')) page = 'library';
   if (['admin', 'sort', 'tags', 'copies'].includes(page) && !isAdmin()) page = 'home';
   const section = page === 'profiles' ? 'profiles' : (PAGE_SECTION[page] || 'books');
@@ -229,7 +244,7 @@ async function route() {
   // A new screen starts at the top, not wherever the last one was scrolled to.
   if (moved) window.scrollTo(0, 0);
   setMain(el('p', { class: 'small dim', role: 'status', text: 'Loading…' }));
-  const pages = { home: pageHome, movies: pageMovies, downloads: pageDownloads, shelf: pageShelf, photos: pageSoon, files: pageSoon, profiles: pageProfiles, library: pageLibrary, book: pageBook,
+  const pages = { home: pageHome, assistant: AssistantUI.page, movies: pageMovies, downloads: pageDownloads, shelf: pageShelf, photos: pageSoon, files: pageSoon, profiles: pageProfiles, appearance: pageAppearance, library: pageLibrary, book: pageBook,
     dashboard: pageDashboard, admin: parts[1] === 'books' ? pageBooksAdmin : pageHubAdmin, sort: pageSort, tags: pageTags, copies: pageCopies, details: pageDetails,
     discover: pageDiscover, devices: pageDevices, series: pageSeries, read: pageRead, mybooks: pageMyBooks };
   const gen = routeGen;
@@ -1153,6 +1168,7 @@ function pageProfiles() {
       el('div', { class: 'rule', style: 'width:min(100%,420px)' }, starMark()),
       el('p', { class: 'dim', style: 'max-width:60ch', text: 'Everyone shares the family server. Each profile keeps its own reading, ratings, devices and requests.' })),
     el('div', { class: 'doors' }, doors), panel,
+    S.me && !isGuest() ? el('p', { class: 'small dim', style: 'text-align:center' }, el('a', { href: '#/appearance', text: 'Choose your colours and layout' })) : null,
     S.me && !isGuest() ? mySettings() : null,
     S.me ? el('div', { class: 'row', style: 'justify-content:center' },
       el('button', { class: 'btn', type: 'button', text: 'Sign out of ' + S.me.name, onclick: async () => { try { await api('POST', '/api/logout'); route(); } catch (e) { oops(e); } } })) : null);
@@ -2068,10 +2084,77 @@ function servicesCard() {
 const HUE_NAMES = [[15, 'Pink'], [40, 'Red'], [70, 'Orange'], [105, 'Yellow'], [165, 'Green'], [215, 'Teal'], [250, 'Sky'], [280, 'Blue'], [320, 'Purple'], [345, 'Magenta'], [360, 'Pink']];
 const hueName = (h) => (HUE_NAMES.find(([top]) => h < top) || HUE_NAMES[0])[1];
 
+// Personal choices are saved by authenticated profile, independently of household defaults.
+async function pageAppearance() {
+  const data = await api('GET', '/api/personal-look');
+  const own = data.overrides;
+  const design = data.designs.find((d) => d.id === data.look.design) || data.designs[0];
+  const choice = (name, options) => el('select', { 'aria-label': name },
+    el('option', { value: 'household', text: 'Use household choice' }),
+    options.map(([value, label]) => el('option', { value, text: label })));
+  const scheme = choice('Your colour scheme', design.schemes.map((s) => [s.id, s.name]));
+  const layout = choice('Your layout', data.layouts.map((s) => [s.id, s.name]));
+  const accent = choice('Your accent', [['default', 'Design default'], ...design.accents.map((a) => [String(a.hue), a.name])]);
+  const scene = choice('Your Scope mode', design.scenes);
+  const transition = choice('Your screen transition', [['on', 'On'], ['off', 'Off']]);
+  for (const [key, input] of [['theme', scheme], ['layout', layout], ['scene', scene]]) input.value = own[key] || 'household';
+  accent.value = Object.hasOwn(own, 'accent') ? (own.accent === null ? 'default' : String(own.accent)) : 'household';
+  // Preserve an arbitrary custom hue selected previously, not just the named presets.
+  if (Object.hasOwn(own, 'accent') && own.accent !== null && !design.accents.some((a) => a.hue === own.accent)) {
+    accent.append(el('option', { value: String(own.accent), text: 'Custom hue · ' + own.accent + '°' })); accent.value = String(own.accent);
+  }
+  transition.value = Object.hasOwn(own, 'transition') ? (own.transition ? 'on' : 'off') : 'household';
+  const notice = el('p', { class: 'small dim', role: 'status', text: 'Saved choices follow your profile across devices.' });
+  const values = () => {
+    const overrides = {};
+    for (const [key, input] of [['theme', scheme], ['layout', layout], ['scene', scene]]) if (input.value !== 'household') overrides[key] = input.value;
+    if (accent.value !== 'household') overrides.accent = accent.value === 'default' ? null : Number(accent.value);
+    if (transition.value !== 'household') overrides.transition = transition.value === 'on';
+    return overrides;
+  };
+  const buttons = [];
+  let saving = false;
+  const save = async (overrides) => {
+    if (saving) return;
+    saving = true;
+    buttons.forEach((b) => { b.disabled = true; });
+    try {
+      const saved = await api('POST', '/api/personal-look', { revision: data.revision, overrides });
+      data.revision = saved.revision; S.look = saved.look; applyLook(saved.look);
+      notice.textContent = 'Saved for ' + S.me.name + '. Everyone else keeps their own choice.';
+      toast('Your appearance is saved.');
+      // Redraw only this page's form; normal navigation continues to use the same functions.
+      await pageAppearance();
+      main().focus({ preventScroll: true });
+    } catch (error) { notice.textContent = error.message; oops(error); }
+    finally { saving = false; buttons.forEach((b) => { b.disabled = false; }); }
+  };
+  const submit = el('button', { class: 'btn pri', type: 'submit', text: 'Save your appearance' });
+  const reset = el('button', { class: 'btn', type: 'button', text: 'Use all household choices', onclick: () => save({}) });
+  const preview = el('button', { class: 'btn', type: 'button', text: 'Preview', onclick: () => {
+    applyLook(Object.assign({}, data.household, values())); notice.textContent = 'Preview only. Save to keep it, or leave this page to restore your saved appearance.';
+  } });
+  buttons.push(submit, reset, preview);
+  setMain(
+    el('div', { class: 'col', style: 'gap:8px' }, el('h1', { text: 'Your appearance' }),
+      el('p', { class: 'dim', text: 'Choose your colours and layout. All the same features stay available.' })),
+    el('form', { class: 'panel cut personal-look-editor', onsubmit: (event) => { event.preventDefault(); save(values()); } },
+      head('For ' + S.me.name),
+      el('p', { class: 'small dim', text: 'Leaving a setting on “Use household choice” follows the family default. Your changes apply only to your signed-in profile.' }),
+      el('div', { class: 'row' }, el('button', { class: 'btn', type: 'button', text: 'Try Quiet dark', onclick: () => {
+        scheme.value = 'dark'; layout.value = 'quiet'; accent.value = '195'; transition.value = 'off';
+        applyLook(Object.assign({}, data.household, values())); notice.textContent = 'Quiet dark preview. Save to keep it.';
+      } })),
+      el('div', { class: 'personal-look-grid' }, field('Colour scheme', scheme), field('Layout', layout), field('Accent', accent), field('Scope mode', scene), field('Screen transition', transition)),
+      el('div', { class: 'layout-descriptions' }, data.layouts.map((l) => el('p', { class: 'small dim' }, el('strong', { text: l.name + ': ' }), l.description))),
+      el('div', { class: 'row' }, submit, preview, reset), notice),
+    isAdmin() ? el('p', { class: 'small dim' }, 'To change the shared default, use ', el('a', { href: '#/admin', text: 'Admin → Hub → Appearance' }), '.') : null);
+}
+
 function appearanceCard(data, reload) {
   const look = data.look;
   const design = data.designs.find((d) => d.id === look.design) || data.designs[0];
-  const save = (body, msg) => api('POST', '/api/admin/look', body).then((r) => { S.look = r.look; applyLook(r.look); toast(msg); reload(); }).catch(oops);
+  const save = (body, msg) => api('POST', '/api/admin/look', body).then(() => api('GET', '/api/state')).then((state) => { S.look = state.look; applyLook(state.look); toast(msg); reload(); }).catch(oops);
   const swatch = (colours) => el('span', { class: 'swatch', 'aria-hidden': 'true' }, colours.filter(Boolean).map((c) => el('i', { style: 'background:' + c })));
   const hue = look.accent === null ? design.default_hue : look.accent;
   const hueLabel = el('span', { class: 'small dim', text: look.accent === null ? 'Purple · default' : hueName(hue) + ' · ' + hue + '°' });

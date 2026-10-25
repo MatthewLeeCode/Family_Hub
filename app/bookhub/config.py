@@ -36,6 +36,8 @@ class Config:
         self.guest_enabled = _bool("GUEST_ENABLED", True)
         self.guest_lan_only = _bool("GUEST_LAN_ONLY", True)
         self.trust_proxy = _bool("TRUST_PROXY", False)
+        self.secure_cookies = _bool("BOOKHUB_SECURE_COOKIES", False)
+        self.assistant_core_url = (os.environ.get("ASSISTANT_CORE_URL") or "http://127.0.0.1:4280").rstrip("/")
 
         self.cwa_url = (os.environ.get("CWA_URL") or "").rstrip("/")
         # For the one job that changes the library: removing spare copies (docs/08). Family Hub signs in
