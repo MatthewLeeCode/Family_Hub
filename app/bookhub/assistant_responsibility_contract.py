@@ -1,6 +1,8 @@
 """Public follow-up projection. Authority baselines and resume decisions stay in core."""
 import re
 
+from . import assistant_approval_contract
+
 MAX_INTEGER = 9007199254740991
 STATUSES = {"active", "paused", "completed", "cancelled", "expired", "exhausted"}
 AVAILABILITY = {"ready", "waiting", "blocked", "not_evaluated"}
@@ -163,6 +165,9 @@ def snapshot(payload, viewer):
         public[key] = [pick(row, fields) for row in values]
         if key == "approvals" and any(type(row.get("dependency_blocked")) is not bool for row in values):
             raise ValueError("Invalid approval availability")
+        if key == "approvals":
+            for row, value in zip(public[key], values):
+                row["presentation"] = assistant_approval_contract.presentation(value.get("presentation"), row)
         if key == "emails":
             for row, value in zip(public[key], values):
                 attachments = value.get("attachments", [])

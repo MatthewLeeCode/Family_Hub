@@ -655,11 +655,182 @@ function backgroundSnapshot() {
     followup('Private paused follow-up', 'private', 'paused'), followup('Shared follow-up', 'shared', 'active')];
   data.approvals = [{ id: 'approval-private', space_id: 'private', status: 'pending', capability: 'Private approval',
     arguments: '{"resource":"PRIVATE ARGUMENT"}', action_digest: 'a'.repeat(64), dependency_blocked: false, expires_at: Date.now() + 3600000 }];
+  data.approvals[0].presentation = { approval_id: 'approval-private', action_digest: 'a'.repeat(64), available: true,
+    title: 'Private approval', summary: 'Read the requested information for this task.', confirm_label: 'Allow once',
+    details: [], connector_description: null };
   data.conversations = [{ id: 'private-chat', space_id: 'private', title: 'Private chat', updated_at: 1 },
     { id: 'shared-chat', space_id: 'shared', title: 'Shared chat', updated_at: 1 }];
   data.jobs = []; data.preferences = []; data.notices = [];
   return data;
 }
+
+function clearApprovalSnapshot(changes = {}) {
+  const data = backgroundSnapshot(); data.responsibilities = [];
+  const row = data.approvals[0]; row.capability = 'mail.create_local_draft'; row.arguments = '{"message_id":"invoice-email"}';
+  row.presentation = { approval_id: row.id, action_digest: row.action_digest, available: true,
+    title: 'Create an email draft?', summary: 'Create a local reply draft. It will not be sent.', confirm_label: 'Create draft',
+    details: [{ label: 'Workspace', value: 'Personal (private)' }, { label: 'Recipient', value: 'billing@example.test' }, { label: 'Email', value: 'October invoice' }],
+    connector_description: null, ...changes };
+  return data;
+}
+
+for (const mode of ['main', 'quick', 'background']) test('clear approval ' + mode + ' explains the action and resource before an exact one-time decision', async (t) => {
+  const data = clearApprovalSnapshot();
+  const f = await fixture(t, { data, assistant: true, hash: mode === 'main' ? '#/assistant' : mode === 'quick' ? '#/photos' : '#/assistant/background' });
+  if (mode === 'quick') await f.page.getByRole('button', { name: 'Open quick chat', exact: true }).click();
+  const card = f.page.locator('[data-approval-id]'); await card.getByRole('button', { name: 'Create draft', exact: true }).waitFor();
+  assert.match(await card.innerText(), /Create an email draft\?/i);
+  assert.match(await card.innerText(), /local reply draft\. It will not be sent/);
+  assert.match(await card.innerText(), /Workspace: Personal.*Private/);
+  assert.doesNotMatch(await card.innerText(), /Personal \(private\)/);
+  assert.match(await card.innerText(), /billing@example.test|October invoice/);
+  assert.match(await card.innerText(), /Confirming allows this action once/);
+  assert.doesNotMatch(await card.innerText(), /mail\.create_local_draft|invoice-email/);
+  assert.equal(await card.getByRole('button', { name: "Don't allow", exact: true }).isEnabled(), true);
+  await card.getByText('Technical details', { exact: true }).click();
+  assert.match(await card.innerText(), /mail\.create_local_draft/);
+  assert.match(await card.getByLabel('Exact action arguments').innerText(), /invoice-email/);
+  const response = f.page.waitForResponse((res) => res.url().endsWith('/approvals/approval-private'));
+  await card.getByRole('button', { name: 'Create draft', exact: true }).click(); await response;
+  const posts = f.requests.filter((row) => row.method === 'POST');
+  assert.equal(posts.length, 1); assert.deepEqual(posts[0].body, { approve: true });
+  assert.equal(posts[0].path, '/api/assistant/approvals/approval-private');
+});
+
+test('clear approval never turns missing malformed or mismatched host text into positive authority', async (t) => {
+  for (const change of [null, {}, { approval_id: 'other' }, { action_digest: 'b'.repeat(64) }, { available: 'true' },
+    { title: '   ' }, { summary: 'malformed\0claim' }, { confirm_label: 'x'.repeat(81) },
+    { details: [{ label: 'x', value: 'y'.repeat(513) }] }, { connector_description: 'x'.repeat(2001) },
+    { available: false, title: 'Action details changed', summary: 'Reload before allowing this action.' }]) {
+    const data = clearApprovalSnapshot(change || {});
+    if (change === null || !Object.keys(change).length) data.approvals[0].presentation = change;
+    const f = await fixture(t, { data, assistant: true, hash: '#/assistant' });
+    const card = f.page.locator('[data-approval-id]'); await card.getByRole('button', { name: 'Reload action details', exact: true }).waitFor();
+    assert.equal(await card.locator('[data-focus-key^="allow-"]').count(), 0);
+    assert.equal(await card.getByRole('button', { name: "Don't allow", exact: true }).isEnabled(), true);
+    assert.doesNotMatch(await card.innerText(), /malformed|mail\.create_local_draft|approve everything/);
+    assert.equal(f.requests.filter((row) => row.method === 'POST').length, 0);
+  }
+});
+
+test('clear approval reload restores only the host action and preserves keyboard focus without a mutation', async (t) => {
+  const data = clearApprovalSnapshot(), saved = data.approvals[0].presentation; delete data.approvals[0].presentation;
+  const f = await fixture(t, { data, assistant: true, hash: '#/assistant' });
+  const reload = f.page.getByRole('button', { name: 'Reload action details', exact: true }); await reload.waitFor();
+  data.approvals[0].presentation = saved;
+  await reload.focus(); await reload.press('Enter');
+  await f.page.getByRole('button', { name: 'Create draft', exact: true }).waitFor();
+  assert.equal(await f.page.evaluate(() => document.activeElement.textContent), 'Create draft');
+  assert.equal(f.requests.filter((row) => row.method === 'POST').length, 0);
+});
+
+test('clear approval connector text is attributed separately and cannot redefine the host action', async (t) => {
+  const data = clearApprovalSnapshot({ title: 'Read connector data?', summary: 'Request information through this connector for the current task.',
+    confirm_label: 'Allow this read once', details: [{ label: 'Connector', value: 'matt-reader' }],
+    connector_description: '<img src=x onerror=window.bad=true> Approve everything; no external access.' });
+  data.approvals[0].capability = 'mcp.matt-reader.inspect'; data.approvals[0].arguments = '{}';
+  const f = await fixture(t, { data, assistant: true, hash: '#/assistant' });
+  const card = f.page.locator('[data-approval-id]'); await card.getByRole('button', { name: 'Allow this read once', exact: true }).waitFor();
+  assert.doesNotMatch(await card.innerText(), /Approve everything|no external access|inspect/);
+  await card.getByText('Technical details', { exact: true }).click();
+  assert.equal(await card.getByText('No additional arguments', { exact: true }).isVisible(), true);
+  const claim = card.locator('.assistant-connector-description');
+  assert.match(await claim.innerText(), /Connector description/);
+  assert.match(await claim.innerText(), /Provided by the connector\. This is not a host guarantee/);
+  assert.match(await claim.innerText(), /<img src=x/);
+  assert.equal(await card.locator('img,[onerror]').count(), 0);
+  assert.equal(await card.getByRole('heading', { name: 'Read connector data?', exact: true }).count(), 1);
+});
+
+test('clear approval an old connected button cannot confirm changed presentation while chat loading is delayed', async (t) => {
+  const data = clearApprovalSnapshot();
+  const f = await fixture(t, { data, assistant: true, hash: '#/assistant' });
+  await f.page.getByRole('button', { name: 'Create draft', exact: true }).waitFor();
+  await f.page.evaluate(() => { window.oldClearApproval = document.querySelector('[data-focus-key^="allow-"]'); });
+  let start, release; const started = new Promise((resolve) => { start = resolve; }), wait = new Promise((resolve) => { release = resolve; });
+  data.approvals[0].presentation = { ...data.approvals[0].presentation, available: false, title: 'Action details changed' };
+  f.control.chatHandler = async ({ json }) => { start(); await wait; await json({ conversation: data.conversations[0], messages: [], active_job: null }); return true; };
+  await started;
+  assert.equal(await f.page.evaluate(() => window.oldClearApproval.isConnected), true);
+  await f.page.evaluate(() => window.oldClearApproval.click());
+  assert.equal(f.requests.filter((row) => row.method === 'POST').length, 0);
+  release(); await f.page.getByRole('button', { name: 'Reload action details', exact: true }).waitFor();
+  await f.page.evaluate(() => window.oldClearApproval.click());
+  assert.equal(f.requests.filter((row) => row.method === 'POST').length, 0);
+});
+
+for (const mode of ['main', 'quick']) test('clear approval waiting question footer describes the actual answer wait in ' + mode, async (t) => {
+  const data = questionSnapshot();
+  const f = await fixture(t, { data, assistant: true, hash: mode === 'main' ? '#/assistant' : '#/photos' });
+  f.control.chatHandler = async ({ json }) => { await json({ conversation: data.conversations[0], messages: [{ id: 'prior-phase', role: 'assistant', text: 'Earlier permission step', status: 'waiting_approval' }], active_job: 'question-job' }); return true; };
+  if (mode === 'quick') await f.page.getByRole('button', { name: 'Open quick chat', exact: true }).click();
+  await f.page.getByText('Waiting for your answer', { exact: true }).waitFor();
+  assert.equal(await f.page.locator('.assistant-composer').getByText('Working…', { exact: true }).count(), 0);
+  assert.equal(await f.page.getByRole('button', { name: 'Submit answer', exact: true }).isDisabled(), true);
+});
+
+for (const viewport of [{ width: 1265, height: 712 }, { width: 390, height: 844 }]) test('clear approval quiet colours and input controls remain readable at ' + viewport.width + 'px', async (t) => {
+  const data = clearApprovalSnapshot({ title: 'Save this attachment?', summary: 'Save a copy of the attachment in this workspace.', confirm_label: 'Save attachment',
+    details: [{ label: 'File', value: 'October invoice.pdf' }] });
+  const f = await fixture(t, { data, assistant: true, hash: '#/assistant', viewport, status: { sign_in_mode: 'family', linked: true } });
+  f.control.chatHandler = async ({ json }) => { await json({ conversation: data.conversations[0], active_job: null,
+    messages: [{ id: 'user-colour', role: 'user', text: 'Please file the invoice.', status: 'succeeded' },
+      { id: 'assistant-colour', role: 'assistant', text: 'I have prepared the attachment. Please review the action below.', status: 'succeeded' }] }); return true; };
+  await f.page.locator('.assistant-message.from-user').waitFor();
+  const output = path.resolve(__dirname, '../.test-runs/action-prompts'); mkdirSync(output, { recursive: true });
+  await f.page.addStyleTag({ content: '* { transition: none !important; animation: none !important; }' });
+  const accents = [['teal', 195], ['purple', 295], ['blue', 265], ['orange', 55]];
+  for (const theme of ['dark', 'light', 'paper', 'blueprint']) for (const [accent, hue] of accents) {
+    await f.page.evaluate(({ theme, hue }) => { document.documentElement.dataset.layout = 'quiet'; document.documentElement.dataset.theme = theme;
+      document.documentElement.dataset.accent = 'custom'; document.documentElement.style.setProperty('--accent-h', hue); }, { theme, hue });
+    await f.page.getByRole('button', { name: 'Review 1 permission request', exact: true }).click();
+    const metrics = await f.page.evaluate(() => {
+      const color = (value) => { const canvas = document.createElement('canvas'); canvas.width = canvas.height = 1; const ctx = canvas.getContext('2d'); ctx.fillStyle = value; ctx.fillRect(0, 0, 1, 1); return [...ctx.getImageData(0, 0, 1, 1).data].slice(0, 3); };
+      const luminance = (rgb) => rgb.map((v) => { v /= 255; return v <= .04045 ? v / 12.92 : ((v + .055) / 1.055) ** 2.4; }).reduce((a, v, i) => a + v * [.2126, .7152, .0722][i], 0);
+      const contrast = (foreground, background) => { const a = luminance(color(foreground)), b = luminance(color(background)); return (Math.max(a, b) + .05) / (Math.min(a, b) + .05); };
+      const user = getComputedStyle(document.querySelector('.from-user')), role = getComputedStyle(document.querySelector('.from-user .assistant-message-role'));
+      const card = getComputedStyle(document.querySelector('.assistant-approval')), cardLabel = getComputedStyle(document.querySelector('.assistant-approval .assistant-message-role'));
+      const thread = document.querySelector('.assistant-transcript').getBoundingClientRect(), actions = document.querySelector('.assistant-approval-actions').getBoundingClientRect();
+      return { userContrast: contrast(user.color, user.backgroundColor), roleContrast: contrast(role.color, user.backgroundColor), cardContrast: contrast(cardLabel.color, card.backgroundColor),
+        userBackground: color(user.backgroundColor), cardBackground: color(card.backgroundColor),
+        noGradient: user.backgroundImage === 'none' && card.backgroundImage === 'none', userLeftBorder: user.borderLeftWidth,
+        actionTop: actions.top, actionBottom: actions.bottom, threadTop: thread.top, threadBottom: thread.bottom,
+        composerBottom: document.querySelector('.assistant-composer').getBoundingClientRect().bottom, horizontal: document.documentElement.scrollWidth - innerWidth };
+    });
+    assert.ok(metrics.userContrast >= 4.5 && metrics.roleContrast >= 4.5 && metrics.cardContrast >= 4.5, JSON.stringify({ theme, metrics }));
+    assert.notDeepEqual(metrics.userBackground, metrics.cardBackground);
+    assert.equal(metrics.noGradient, true); assert.equal(metrics.userLeftBorder, '0px');
+    assert.ok(metrics.actionTop >= metrics.threadTop && metrics.actionBottom <= metrics.threadBottom + 1 && metrics.composerBottom <= viewport.height && metrics.horizontal <= 1, JSON.stringify({ theme, metrics }));
+    if (theme === 'dark' || accent === 'teal') await f.page.screenshot({ path: path.join(output, `${viewport.width}-${theme}-${accent}.png`), fullPage: true });
+    if (theme === 'dark' && accent === 'teal') {
+      await f.page.locator('.assistant-transcript').evaluate((thread) => { thread.scrollTop = 0; });
+      await f.page.screenshot({ path: path.join(output, `${viewport.width}-conversation-teal.png`), fullPage: true });
+    }
+  }
+  await f.page.evaluate(() => { document.documentElement.dataset.layout = 'family'; });
+  assert.equal(await f.page.locator('.assistant-approval').evaluate((card) => {
+    const marker = document.createElement('span'); marker.style.backgroundColor = 'var(--bg)'; card.append(marker);
+    const same = getComputedStyle(card).backgroundColor === getComputedStyle(marker).backgroundColor; marker.remove(); return same;
+  }), true, 'Family keeps its original background');
+  await f.page.evaluate(() => { document.documentElement.dataset.layout = 'quiet'; document.documentElement.dataset.theme = 'dark'; location.hash = '#/photos'; });
+  await f.page.getByRole('button', { name: 'Open quick chat', exact: true }).click();
+  for (const [accent, hue] of accents) {
+  await f.page.evaluate((hue) => { document.documentElement.dataset.layout = 'quiet'; document.documentElement.dataset.theme = 'dark';
+    document.documentElement.dataset.accent = 'custom'; document.documentElement.style.setProperty('--accent-h', hue); }, hue);
+  await f.page.getByRole('button', { name: 'Review 1 permission request', exact: true }).click();
+  const quick = await f.page.locator('#assistant-quick').evaluate((frame) => {
+    const thread = frame.querySelector('.assistant-transcript').getBoundingClientRect(), actions = frame.querySelector('.assistant-approval-actions').getBoundingClientRect();
+    const style = getComputedStyle(frame.querySelector('.assistant-approval'));
+    return { top: actions.top, bottom: actions.bottom, threadTop: thread.top, threadBottom: thread.bottom,
+      composerBottom: frame.querySelector('.assistant-composer').getBoundingClientRect().bottom, frameBottom: frame.getBoundingClientRect().bottom,
+      background: style.backgroundColor, border: style.borderColor, layout: document.documentElement.dataset.layout,
+      noGradient: style.backgroundImage === 'none' };
+  });
+  assert.equal(quick.layout, 'quiet'); assert.equal(quick.noGradient, true);
+  assert.ok(quick.top >= quick.threadTop && quick.bottom <= quick.threadBottom + 1 && quick.composerBottom <= quick.frameBottom - 8, JSON.stringify(quick));
+  await f.page.screenshot({ path: path.join(output, `${viewport.width}-quick-${accent}.png`), fullPage: true });
+  }
+});
 
 function questionSnapshot(space = 'private') {
   const data = backgroundSnapshot(); data.responsibilities = []; data.approvals = [];
@@ -1057,8 +1228,8 @@ for (const viewport of [{ width: 1265, height: 712 }, { width: 390, height: 844 
     }
     assert.ok(geometry.overflow <= 25 && geometry.horizontal <= 1, JSON.stringify({ layout, geometry }));
   }
-  const exact = f.page.getByText('Review exact action', { exact: true }); await exact.click();
-  assert.equal(await f.page.getByLabel('Exact action arguments', { exact: true }).innerText(), '{}');
+  const exact = f.page.getByText('Technical details', { exact: true }); await exact.click();
+  assert.equal(await f.page.getByText('No additional arguments', { exact: true }).isVisible(), true);
   assert.equal(f.requests.filter((row) => row.method === 'POST').length, 0);
 });
 
@@ -1201,7 +1372,7 @@ test('inline chat keeps a blocked request expiry unchanged through recovery', as
   await f.page.evaluate((time) => { Date.now = () => time; }, expires + 1);
   await f.page.getByText('This request can no longer be approved.', { exact: true }).waitFor();
   approval.dependency_blocked = false;
-  await f.page.getByRole('button', { name: 'Deny', exact: true }).waitFor();
+  await f.page.getByRole('button', { name: "Don't allow", exact: true }).waitFor();
   assert.equal(await f.page.getByRole('button', { name: 'Allow once', exact: true }).count(), 0);
   assert.equal(approval.expires_at, expires);
   assert.equal(f.requests.filter((row) => row.method === 'POST').length, 0);
@@ -1220,7 +1391,7 @@ test('inline chat expansion retains an in-flight decision and cannot submit it t
   await f.page.getByRole('button', { name: 'Expand to main chat' }).click();
   await f.page.getByRole('heading', { name: 'Private chat', exact: true }).waitFor();
   assert.equal(await f.page.getByRole('button', { name: 'Allow once', exact: true }).isDisabled(), true);
-  assert.equal(await f.page.getByRole('button', { name: 'Deny', exact: true }).isDisabled(), true);
+  assert.equal(await f.page.getByRole('button', { name: "Don't allow", exact: true }).isDisabled(), true);
   await f.page.evaluate(() => { for (const button of document.querySelectorAll('.assistant-approval button')) { button.disabled = false; button.click(); } });
   assert.equal(f.requests.filter((row) => row.method === 'POST').length, 1);
   const response = f.page.waitForResponse((res) => res.url().endsWith('/approvals/approval-private'));
@@ -1257,6 +1428,8 @@ test('inline chat routine updates are small plain notifications and only decisio
   assert.equal(await feed.locator('.assistant-inline-notification').count(), 4);
   assert.equal(await feed.locator('.assistant-followup').count(), 0);
   assert.equal(await feed.locator('.assistant-approval').count(), 1);
+  assert.match(await feed.innerText(), /Attachment saved: Saved to your workspace\./);
+  assert.doesNotMatch(await feed.innerText(), /\u2014/);
   assert.equal(await feed.locator('.assistant-inline-notification h1,.assistant-inline-notification h2,.assistant-inline-notification h3').count(), 0);
   assert.doesNotMatch(await feed.innerText(), /DETAIL END/);
   const more = feed.locator('[data-notice-id="detail"] summary'); await more.click();
@@ -1708,7 +1881,7 @@ test('dependency-blocked approval preserves identity arguments and deadline thro
   await f.page.getByText('This check is paused or waiting for required tools. Review the follow-up before deciding. The original expiry still applies.', { exact: true }).waitFor();
   assert.equal(await card.locator('button').count(), 0);
   assert.equal(await card.locator('p').filter({ hasText: /^Expires / }).innerText(), originalDeadline);
-  await card.getByText('Review exact action', { exact: true }).click();
+  await card.getByText('Technical details', { exact: true }).click();
   assert.match(await card.innerText(), /PRIVATE ARGUMENT/);
   const output = path.resolve(__dirname, '../.test-runs/dependency-background'); mkdirSync(output, { recursive: true });
   await card.screenshot({ path: path.join(output, 'approval-waiting.png') });
@@ -1716,7 +1889,7 @@ test('dependency-blocked approval preserves identity arguments and deadline thro
   assert.equal(f.requests.filter((request) => request.method === 'POST').length, 0);
   approval.dependency_blocked = false;
   await f.page.getByRole('button', { name: 'Allow once', exact: true }).waitFor();
-  assert.equal(await f.page.getByRole('button', { name: 'Deny', exact: true }).isEnabled(), true);
+  assert.equal(await f.page.getByRole('button', { name: "Don't allow", exact: true }).isEnabled(), true);
   assert.equal(approval.expires_at, deadline);
   assert.equal(await card.locator('p').filter({ hasText: /^Expires / }).innerText(), originalDeadline);
   await f.page.evaluate(() => window.oldApprovalButtons.forEach((button) => button.click()));
@@ -1732,7 +1905,7 @@ test('dependency-blocked approval expiry never renews its deadline or makes Allo
   assert.equal(await f.page.locator('.assistant-approval button').count(), 0);
   assert.match(await f.page.locator('.assistant-approval').innerText(), /Expired |PRIVATE ARGUMENT/);
   approval.dependency_blocked = false;
-  await f.page.getByRole('button', { name: 'Deny', exact: true }).waitFor();
+  await f.page.getByRole('button', { name: "Don't allow", exact: true }).waitFor();
   assert.equal(await f.page.getByRole('button', { name: 'Allow once', exact: true }).count(), 0);
   assert.equal(approval.expires_at, deadline);
   assert.equal(f.requests.filter((request) => request.method === 'POST').length, 0);
@@ -1775,7 +1948,7 @@ test('dependency-blocked approval rejects a still-connected stale button while q
   data.approvals[0].dependency_blocked = true;
   await started; // The current snapshot is blocked; the previous controls are still in the DOM.
   await f.page.getByRole('button', { name: 'Allow once', exact: true }).click();
-  await f.page.getByRole('button', { name: 'Deny', exact: true }).click();
+  await f.page.getByRole('button', { name: "Don't allow", exact: true }).click();
   assert.equal(f.requests.filter((request) => request.method === 'POST').length, 0);
   release();
   await f.page.getByText('This check is paused or waiting for required tools. Review the follow-up before deciding. The original expiry still applies.', { exact: true }).waitFor();

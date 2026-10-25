@@ -230,7 +230,7 @@ def test_snapshot_requires_boolean_approval_dependency_state_and_preserves_its_i
         fake_core["response"] = core_response(payload)
         response = client.get("/api/assistant/state")
         assert response.status_code == 200
-        assert response.get_json()["approvals"] == [approval]
+        assert response.get_json()["approvals"] == [{**approval, "presentation": None}]
     for value in (None, 0, 1, "false", [], {}):
         approval["dependency_blocked"] = value
         fake_core["response"] = core_response(payload)

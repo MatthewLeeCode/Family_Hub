@@ -51,12 +51,19 @@
 .assistant-inline-record { min-width: 0; }
 :root .assistant-approval, :root .assistant-inline-updates .assistant-followup { display: grid; gap: 10px; padding: 16px; background: var(--bg); border: 1px solid var(--line2); border-radius: 10px; box-shadow: none; }
 :root .assistant-view .assistant-approval { gap: 7px; padding: 12px; clip-path: none; }
-.assistant-approval h3 { font-size: 15px; overflow-wrap: anywhere; }
+.assistant-approval h3 { font-size: 15px; color: var(--ink); overflow-wrap: anywhere; }
 .assistant-approval-heading { gap: 3px 10px; }
 .assistant-approval .small { font-size: 12px; }
 .assistant-approval-detail summary { font-size: 12px; cursor: pointer; min-height: 28px; }
 .assistant-approval-detail > p, .assistant-approval-detail > pre { margin-top: 7px; }
 .assistant-approval-actions .btn { padding-block: 7px; }
+.assistant-approval-summary { font-size: 13px; line-height: 1.45; overflow-wrap: anywhere; }
+.assistant-approval-facts { display: flex; flex-wrap: wrap; gap: 3px 16px; margin: 0; font-size: 12px; line-height: 1.4; }
+.assistant-approval-facts > div { display: flex; gap: 8px; flex-wrap: wrap; }
+.assistant-approval-facts dt { color: var(--dim); }
+.assistant-approval-facts dd { margin: 0; overflow-wrap: anywhere; }
+.assistant-connector-description { margin-top: 8px; }
+.assistant-connector-description h4 { font-size: 12px; margin-bottom: 3px; }
 :root .assistant-view .assistant-question { display: grid; gap: 8px; padding: 12px; background: var(--bg); border: 1px solid var(--line2); border-radius: 10px; clip-path: none; box-shadow: none; }
 .assistant-question form, .assistant-question-recovery { display: grid; gap: 8px; }
 .assistant-question .small { font-size: 12px; }
@@ -107,6 +114,21 @@
 .assistant-quick .assistant-login { padding: 16px; }
 .assistant-quick [hidden] { display: none !important; }
 :root[data-layout="quiet"] .assistant-chat { border-radius: 10px; }
+/* Quiet adds restrained colour; the original Family look keeps its own palette. */
+:root[data-layout="quiet"] .assistant-message.from-user { background: color-mix(in srgb, var(--accent) 21%, var(--panel)); }
+:root[data-layout="quiet"] .assistant-message.from-user .assistant-message-role,
+:root[data-layout="quiet"] .assistant-message.from-assistant .assistant-message-role { color: color-mix(in srgb, var(--accent) 45%, var(--ink)); }
+:root[data-layout="quiet"] .assistant-message.from-assistant { background: color-mix(in srgb, var(--accent) 5%, var(--bg)); border-color: color-mix(in srgb, var(--accent) 23%, var(--line)); }
+:root[data-layout="quiet"] .assistant-view .assistant-question { background: color-mix(in srgb, var(--accent) 6%, var(--bg)); border-color: color-mix(in srgb, var(--accent) 45%, var(--line2)); }
+:root[data-layout="quiet"] .assistant-question .assistant-message-role,
+:root[data-layout="quiet"] .assistant-composer [data-state="input"],
+:root[data-layout="quiet"] .assistant-composer [data-state="working"] { color: color-mix(in srgb, var(--accent) 40%, var(--ink)); }
+:root[data-layout="quiet"] .assistant-view .assistant-approval { background: color-mix(in srgb, #c28a35 6%, var(--bg)); border-color: color-mix(in srgb, #c28a35 45%, var(--line2)); }
+:root[data-layout="quiet"] .assistant-approval .assistant-message-role,
+:root[data-layout="quiet"] .assistant-composer [data-state="permission"],
+:root[data-layout="quiet"] .assistant-composer [data-state="dependency"] { color: color-mix(in srgb, #c28a35 35%, var(--ink)); }
+:root[data-layout="quiet"] .assistant-request-jump { background: color-mix(in srgb, var(--accent) 10%, var(--panel)); border-color: color-mix(in srgb, var(--accent) 35%, var(--line2)); }
+:root[data-layout="quiet"] .assistant-conversation[aria-current] { background: color-mix(in srgb, var(--accent) 12%, var(--panel2)); }
 :root[data-layout="compact"] .assistant-chat-layout { grid-template-columns: minmax(0, 1fr) 200px; gap: 20px; }
 @media (max-width: 1000px) {
   .assistant-chat-layout, :root[data-layout="compact"] .assistant-chat-layout { grid-template-columns: minmax(0, 1fr); }
@@ -129,6 +151,8 @@
   .assistant-transcript { min-height: 140px; }
   .assistant-message { max-width: 95%; padding: 10px 12px; }
   .assistant-chat-layout, :root[data-layout="compact"] .assistant-chat-layout { gap: 10px; }
+  .assistant-approval-actions .btn { font-size: 12px; padding-inline: 10px; letter-spacing: .02em; }
+  :root[data-layout="compact"] .assistant-view .assistant-approval { gap: 4px; padding: 10px; }
 }
 :root .assistant-records .assistant-grant { display: block; padding: 16px; }
 .assistant-grant-form { display: grid; gap: 12px; margin-top: 16px; }

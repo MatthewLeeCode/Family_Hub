@@ -52,6 +52,18 @@ const AssistantUI = (() => {
   const publicId = (value) => typeof value === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(value);
   const safeCount = (value, minimum = 0, maximum = Number.MAX_SAFE_INTEGER) => Number.isSafeInteger(value) && value >= minimum && value <= maximum;
   const safeText = (value, maximum) => typeof value === 'string' && new TextEncoder().encode(value).length <= maximum;
+  const plainText = (value, maximum) => safeText(value, maximum) && !!value.trim() && !value.includes('\0');
+  function approvalPresentation(approval) {
+    const value = approval.presentation;
+    if (!value || !publicId(value.approval_id) || value.approval_id !== approval.id ||
+        typeof value.action_digest !== 'string' || !/^[a-f0-9]{64}$/.test(value.action_digest) || value.action_digest !== approval.action_digest ||
+        typeof value.available !== 'boolean' || !plainText(value.title, 120) || !plainText(value.summary, 800) || !plainText(value.confirm_label, 80) ||
+        !Array.isArray(value.details) || value.details.length > 8 || !value.details.every((detail) => detail && plainText(detail.label, 80) && plainText(detail.value, 512)) ||
+        !(value.connector_description === null || plainText(value.connector_description, 2000))) return null;
+    return { approval_id: value.approval_id, action_digest: value.action_digest, available: value.available, title: value.title,
+      summary: value.summary, confirm_label: value.confirm_label, details: value.details.map(({ label, value }) => ({ label, value })),
+      connector_description: value.connector_description };
+  }
   const optionId = (value) => typeof value === 'string' && /^[A-Za-z0-9_-]{1,32}$/.test(value);
   const questionKey = (row) => row.space_id + ':' + row.id;
   const questionBinding = (row) => JSON.stringify([row.id, row.job_id, row.conversation_id, row.space_id, row.owner_id,
@@ -632,8 +644,10 @@ const AssistantUI = (() => {
       this.newButton.disabled = busy;
       const status = list(this.chat?.messages).at(-1)?.status;
       const jobStatus = list(this.snapshot.jobs).find((job) => job.id === activeJob)?.status;
-      this.chatStatus.textContent = busy ? 'Sending…' : loading ? 'Loading…' : status === 'waiting_approval' || jobStatus === 'waiting_approval' ? 'Waiting for permission' :
-        jobStatus === 'waiting_dependency' ? 'Waiting for dependencies' : activeJob ? 'Working…' : '';
+      this.chatStatus.textContent = busy ? 'Sending…' : loading ? 'Loading…' : jobStatus === 'waiting_input' ? 'Waiting for your answer' :
+        status === 'waiting_approval' || jobStatus === 'waiting_approval' ? 'Waiting for permission' : jobStatus === 'waiting_dependency' ? 'Waiting for dependencies' : activeJob ? 'Working…' : '';
+      this.chatStatus.dataset.state = busy || loading ? 'working' : jobStatus === 'waiting_input' ? 'input' :
+        status === 'waiting_approval' || jobStatus === 'waiting_approval' ? 'permission' : jobStatus === 'waiting_dependency' ? 'dependency' : activeJob ? 'working' : 'idle';
       const space = list(this.snapshot.spaces).find((s) => s.id === this.scope);
       this.scopeHint.textContent = space ? space.name + (space.kind === 'shared' ? ' · visible to this space’s members' : ' · private to you') : '';
     }
@@ -905,7 +919,7 @@ const AssistantUI = (() => {
       });
       for (const missing of list(grant.resources).filter((value) => !list(grant.resource_choices).some((c) => c.value === value))) {
         const input = el('input', { type: 'checkbox', value: missing }); input.checked = true;
-        resourceChecks.push({ input, node: el('label', { class: 'assistant-grant-choice' }, input, el('span', { text: 'Unavailable selection: ' + missing + ' — remove before saving' })) });
+        resourceChecks.push({ input, node: el('label', { class: 'assistant-grant-choice' }, input, el('span', { text: 'Unavailable selection: ' + missing + ': remove before saving' })) });
       }
       const resourceList = el('div', { class: 'assistant-grant-choices' },
         resourceChecks.length ? resourceChecks.map((item) => item.node) : paragraph('No resources are currently available.', 'small dim'),
@@ -1121,7 +1135,7 @@ const AssistantUI = (() => {
       const full = String(body || ''), brief = full.length > 160 ? full.slice(0, 157).trimEnd() + '…' : full;
       return el('article', { class: 'assistant-inline-notification', ...attributes },
         el('p', {}, el('span', { class: 'assistant-update-dot', 'aria-hidden': 'true', text: '·' }),
-          el('strong', { text: title }), brief ? el('span', { text: ' — ' + brief }) : null,
+          el('strong', { text: title }), brief ? el('span', { text: ': ' + brief }) : null,
           at ? el('time', { class: 'assistant-update-time', text: dateTime(at) }) : null),
         full.length > 160 ? el('details', {}, el('summary', { text: 'More' }), paragraph(full, '')) : null);
     }
@@ -1262,29 +1276,56 @@ const AssistantUI = (() => {
     approvalCard(approval) {
       const expired = approval.expires_at <= Date.now();
       const available = approval.dependency_blocked === false && !this.approvalNeedsReload.has(approval.id);
+      const presentation = approvalPresentation(approval), explained = presentation?.available === true;
+      const presentationBinding = JSON.stringify(presentation), epoch = this.scopeVersion;
+      const card = el('article', { class: 'panel cut assistant-approval', 'data-approval-id': approval.id, tabindex: -1 });
       const canDecide = (approve) => {
         const current = list(this.snapshot?.approvals).find((row) => row.id === approval.id && row.space_id === this.scope);
-        return this.approvalsScope === this.scope && current?.status === 'pending' && current.dependency_blocked === false &&
+        return card.isConnected && !this.switching && epoch === this.scopeVersion && this.approvalsScope === this.scope && current?.status === 'pending' && current.dependency_blocked === false &&
           !this.approvalNeedsReload.has(approval.id) && current.expires_at === approval.expires_at && current.arguments === approval.arguments &&
-          current.action_digest === approval.action_digest && current.job_id === approval.job_id && (!approve || current.expires_at > Date.now());
+          current.action_digest === approval.action_digest && current.job_id === approval.job_id && (!approve || (current.expires_at > Date.now() &&
+            explained && approvalPresentation(current)?.available === true && JSON.stringify(approvalPresentation(current)) === presentationBinding));
       };
       const job = list(this.snapshot.jobs).find((row) => row.id === approval.job_id && row.space_id === this.scope);
       const followup = list(this.snapshot.responsibilities).find((row) => row.space_id === this.scope && row.current_job?.id === approval.job_id);
-      const context = followup ? 'Follow-up: ' + followup.title : job ? 'For: ' + job.title : 'Request in this workspace';
-      return el('article', { class: 'panel cut assistant-approval', 'data-approval-id': approval.id, tabindex: -1 },
-        el('div', { class: 'row between assistant-approval-heading' }, el('h3', { text: approval.capability }), paragraph('Permission request', 'assistant-message-role')),
-        paragraph(context, 'small dim'),
+      const space = list(this.snapshot.spaces).find((row) => row.id === approval.space_id);
+      const workspace = [space?.name || 'Current workspace', space?.kind === 'shared' ? 'Shared' : space?.kind === 'private' ? 'Private' : null].filter(Boolean).join(' · ');
+      const facts = (presentation?.details || []).filter((detail) => detail.label !== 'Workspace');
+      const context = followup ? 'Follow-up: ' + followup.title : job ? 'Task: ' + job.title : null;
+      let noArguments = false;
+      try { const args = JSON.parse(approval.arguments); noArguments = args && !Array.isArray(args) && typeof args === 'object' && Object.keys(args).length === 0; } catch (_) {}
+      fill(card,
+        el('div', { class: 'row between assistant-approval-heading' }, el('h3', { text: presentation?.title || 'Action details unavailable' }), paragraph('Permission request', 'assistant-message-role')),
+        paragraph(presentation?.summary || 'The proposed action could not be explained. Reload its details before allowing it.', 'assistant-approval-summary'),
+        paragraph('Workspace: ' + workspace, 'small dim'),
+        facts.length ? el('dl', { class: 'assistant-approval-facts' }, facts.map((detail) =>
+          el('div', {}, el('dt', { text: detail.label }), el('dd', { text: detail.value })))) : null,
+        paragraph('Confirming allows this action once. Your standing permissions stay the same.', 'small dim'),
         el('details', { class: 'assistant-approval-detail', 'data-key': 'approval-arguments-' + approval.id },
-          el('summary', { text: 'Review exact action' }),
-          paragraph('Allow once authorises only this exact action. It does not change your standing permissions.', 'small dim'),
-          el('pre', { class: 'assistant-arguments', tabindex: 0, 'aria-label': 'Exact action arguments', text: prettyArgs(approval.arguments) })),
+          el('summary', { text: 'Technical details' }),
+          paragraph('Capability: ' + approval.capability, 'small dim'), context ? paragraph(context, 'small dim') : null,
+          noArguments ? paragraph('No additional arguments', 'small dim') : el('pre', { class: 'assistant-arguments', tabindex: 0, 'aria-label': 'Exact action arguments', text: prettyArgs(approval.arguments) }),
+          presentation?.connector_description ? el('section', { class: 'assistant-connector-description' },
+            el('h4', { text: 'Connector description' }), paragraph('Provided by the connector. This is not a host guarantee about its safety or access.', 'small dim'),
+            paragraph(presentation.connector_description, 'small')) : null),
         paragraph((expired ? 'Expired ' : 'Expires ') + dateTime(approval.expires_at), 'small dim'),
         approval.dependency_blocked === true ? paragraph('This check is paused or waiting for required tools. Review the follow-up before deciding. The original expiry still applies.', 'small dim') :
           !available ? paragraph('This request’s availability could not be verified. Reload its current state before deciding.', 'small dim') : null,
         expired ? paragraph('This request can no longer be approved.', 'small dim') : null,
-        available ? el('div', { class: 'row assistant-approval-actions' }, expired ? null :
-          this.action('Allow once', 'allow-' + approval.id, 'approvals/' + pathId(approval.id), { approve: true }, 'btn pri', () => canDecide(true)),
-          this.action('Deny', 'deny-' + approval.id, 'approvals/' + pathId(approval.id), { approve: false }, 'btn', () => canDecide(false))) : null);
+        el('div', { class: 'row assistant-approval-actions' }, available && !expired && explained ?
+          this.action(presentation.confirm_label, 'allow-' + approval.id, 'approvals/' + pathId(approval.id), { approve: true }, 'btn pri', () => canDecide(true)) : null,
+          available ? this.action("Don't allow", 'deny-' + approval.id, 'approvals/' + pathId(approval.id), { approve: false }, 'btn', () => canDecide(false)) : null,
+          !explained ? el('button', { class: 'btn', type: 'button', text: 'Reload action details', 'data-focus-key': 'reload-approval-' + approval.id, onclick: async (event) => {
+            if (!card.isConnected || !this.live() || epoch !== this.scopeVersion || this.scope !== approval.space_id || this.switching) return;
+            const button = event.currentTarget, hadFocus = button === document.activeElement; button.disabled = true;
+            try { await this.refresh(); } catch (error) { this.error(error); }
+            finally { if (button.isConnected) button.disabled = false; }
+            if (hadFocus && this.live() && epoch === this.scopeVersion && this.scope === approval.space_id && document.activeElement === document.body) {
+              const replacement = this.workElements('[data-approval-id]').find((node) => node.dataset.approvalId === approval.id);
+              (replacement?.querySelector('[data-focus-key="allow-' + approval.id + '"]') || replacement || this.composer)?.focus({ preventScroll: true });
+            }
+          } }) : null));
+      return card;
     }
     renderInlineUpdates() {
       if (!this.chatUpdates || !this.transcript || !this.snapshot || this.approvalsScope !== this.scope) return;
