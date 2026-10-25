@@ -44,7 +44,7 @@ def notes(app, monkeypatch):
     return control
 
 
-def enter(client, name="You"):
+def enter(client, name="Matt"):
     assert login(client, name).status_code == 200
     state = client.get("/api/state").get_json()
     client.environ_base["HTTP_X_ASSISTANT_CONTEXT"] = state["assistant_context"]
@@ -81,7 +81,7 @@ def test_cross_tab_view_binding_blocks_reads_and_mutations_before_dispatch(app, 
     old = enter(client)
     old_tab = app.test_client()
     old_tab.environ_base["HTTP_X_ASSISTANT_CONTEXT"] = old["assistant_context"]
-    enter(client, "Partner")
+    enter(client, "Nicky")
     old_tab.set_cookie("bookhub", client.get_cookie("bookhub").value)
     for method, path in [("GET", "status"), ("GET", "scopes"), ("POST", "scopes/shared/notes"), ("DELETE", "scopes/shared/notes/note-a")]:
         result = old_tab.open("/api/notes/" + path, method=method, json={})
@@ -95,7 +95,7 @@ def test_guest_override_and_cross_origin_are_denied(app, client, notes):
     assert client.get("/api/notes/status").status_code == 403
     state = client.get("/api/state").get_json()
     ids = {p["name"]: p["id"] for p in state["profiles"]}
-    client.post("/api/login", json={"profile_id": ids["Partner"], "admin_id": ids["You"], "admin_passcode": "1234"})
+    client.post("/api/login", json={"profile_id": ids["Nicky"], "admin_id": ids["Matt"], "admin_passcode": "1234"})
     assert client.get("/api/notes/scopes").status_code == 403
     enter(client)
     assert client.post("/api/notes/scopes/shared/notes", json={}, headers={"Origin": "https://evil.invalid"}).status_code == 403

@@ -47,6 +47,16 @@ enum Command {
         #[arg(long)]
         export: PathBuf,
     },
+    /// Rename fixed synthetic Notes labels after stopping all three services.
+    RenameDemoProfiles {
+        #[arg(long)]
+        database: PathBuf,
+        #[arg(long)]
+        profiles_db: PathBuf,
+        /// Confirms Family Hub is also stopped; its DB has no daemon lock.
+        #[arg(long, required = true)]
+        services_stopped: bool,
+    },
 }
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -96,6 +106,18 @@ async fn main() -> Result<()> {
             let mut store = Store::open(&database, &profiles_db, false)?;
             let receipt = store.import_core_notes(&bytes)?;
             println!("{}", serde_json::to_string(&receipt)?);
+        }
+        Command::RenameDemoProfiles {
+            database,
+            profiles_db,
+            services_stopped,
+        } => {
+            anyhow::ensure!(
+                services_stopped,
+                "Stop all services before renaming demo profiles"
+            );
+            let mut store = Store::open(&database, &profiles_db, false)?;
+            println!("{}", serde_json::to_string(&store.rename_demo_profiles()?)?);
         }
     }
     Ok(())

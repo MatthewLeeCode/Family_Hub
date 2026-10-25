@@ -54,9 +54,9 @@ def test_family_signout_reports_unconfirmed_without_retaining_session(app, clien
 def test_profile_switch_reports_old_account_revocation(client, fake_core):
     link(client)
     fake_core["exception"] = requests.Timeout()
-    result = login(client, "Partner")
+    result = login(client, "Nicky")
     assert result.json["core_revocation"] == "unconfirmed"
-    assert client.get("/api/state").json["me"]["name"] == "Partner"
+    assert client.get("/api/state").json["me"]["name"] == "Nicky"
     assert client.get("/api/assistant/status").json["signed_in"] is False
 
 

@@ -72,7 +72,7 @@ def connect(client, account="matt", password="synthetic-password"):
     return result
 
 
-def link(client, profile="You", account="matt"):
+def link(client, profile="Matt", account="matt"):
     assert login(client, profile).status_code == 200
     result = connect(client, account)
     assert result.status_code == 200
@@ -203,7 +203,7 @@ def stale_session(app, cookie):
 
 
 def test_core_token_is_server_only_and_login_rotates_cookie(app, client):
-    assert login(client, "You").status_code == 200
+    assert login(client, "Matt").status_code == 200
     before = sid(client)
     response = connect(client)
     after = sid(client)
@@ -241,7 +241,7 @@ def test_assistant_logout_rotates_and_preserves_family_profile(app, client):
     assert response.status_code == 200
     client.environ_base["HTTP_X_ASSISTANT_CONTEXT"] = response.get_json()["context"]
     assert sid(client) != before
-    assert client.get("/api/state").get_json()["me"]["name"] == "You"
+    assert client.get("/api/state").get_json()["me"]["name"] == "Matt"
     assert client.get("/api/assistant/status").get_json()["signed_in"] is False
     assert replay(app, before).get("/api/books").status_code == 401
 
@@ -264,7 +264,7 @@ def test_stale_request_cannot_overwrite_rotated_or_newer_session(app, client):
     link(client)
     before = sid(client)
     stale = stale_session(app, before)
-    assert login(client, "Partner").status_code == 200
+    assert login(client, "Nicky").status_code == 200
     after = sid(client)
     stale["assistant_token"] = core_token("old")
     with app.app_context():
@@ -304,33 +304,33 @@ def test_guest_and_admin_override_cannot_access_assistant(app, client, fake_core
     assert client.post("/api/assistant/connections/notes-matt/control", json={"space_id": "space-matt", "expected_revision": 1, "action": "retry"}).status_code == 403
     assert client.post("/api/assistant/login", json={"login": "matt", "password": "x"}).status_code == 403
     ids = {p["name"]: p["id"] for p in client.get("/api/state").get_json()["profiles"]}
-    client.post("/api/login", json={"profile_id": ids["Partner"], "admin_id": ids["You"], "admin_passcode": "1234"})
+    client.post("/api/login", json={"profile_id": ids["Nicky"], "admin_id": ids["Matt"], "admin_passcode": "1234"})
     assert client.get("/api/assistant/status").status_code == 403
     assert client.get("/api/assistant/connections?space_id=space-matt").status_code == 403
     assert client.post("/api/assistant/connections/notes-matt/control", json={"space_id": "space-matt", "expected_revision": 1, "action": "enable"}).status_code == 403
     assert client.post("/api/assistant/logout", json={}).status_code == 403
     assert fake_core["calls"] == []
-    app.hub.con().execute("UPDATE profiles SET passcode_hash='revoked' WHERE id=?", (ids["You"],))
+    app.hub.con().execute("UPDATE profiles SET passcode_hash='revoked' WHERE id=?", (ids["Matt"],))
     app.hub.con().commit()
     assert client.get("/api/books").status_code == 401
 
 
 def test_two_users_have_independent_core_tokens_and_profile_switch_clears_link(app, client, fake_core):
     wife = app.test_client()
-    link(client, "You", "matt")
-    link(wife, "Partner", "wife")
+    link(client, "Matt", "matt")
+    link(wife, "Nicky", "wife")
     client.get("/api/assistant/state")
     assert fake_core["calls"][-1]["headers"]["Cookie"] == "household_session=" + core_token("matt")
     wife.get("/api/assistant/state")
     assert fake_core["calls"][-1]["headers"]["Cookie"] == "household_session=" + core_token("wife")
-    login(client, "Partner")
+    login(client, "Nicky")
     assert client.get("/api/assistant/status").get_json()["signed_in"] is False
     assert wife.get("/api/assistant/status").get_json()["user"]["login"] == "wife"
 
 
 @pytest.mark.parametrize("switch", ["family_profile", "assistant_account"])
 def test_old_tab_cannot_read_or_act_with_a_new_tabs_shared_cookie(app, client, fake_core, switch):
-    link(client, "You", "matt")
+    link(client, "Matt", "matt")
     old_context = client.environ_base["HTTP_X_ASSISTANT_CONTEXT"]
     old_tab = app.test_client()
     old_tab.environ_base["HTTP_X_ASSISTANT_CONTEXT"] = old_context
@@ -338,7 +338,7 @@ def test_old_tab_cannot_read_or_act_with_a_new_tabs_shared_cookie(app, client, f
     assert old_tab.get("/api/assistant/status").get_json()["user"]["login"] == "matt"
 
     if switch == "family_profile":
-        link(client, "Partner", "wife")
+        link(client, "Nicky", "wife")
     else:
         assert connect(client, "wife").status_code == 200
     assert client.environ_base["HTTP_X_ASSISTANT_CONTEXT"] != old_context
@@ -448,7 +448,7 @@ def test_errors_and_token_echo_are_sanitized_and_401_disconnects(client, fake_co
 
 
 def test_login_projects_user_fields_and_rejects_invalid_token(client, fake_core):
-    login(client, "You")
+    login(client, "Matt")
     fake_core["response"] = core_response({**user("matt"), "secret": "do-not-display"}, token=core_token())
     response = connect(client, password="x")
     assert response.get_json() == {"user": user("matt"), "context": bind_view(client), "core_revocation": "not_connected"}
@@ -477,7 +477,7 @@ def test_malformed_upstream_payloads_and_duplicate_cookies_are_safe(client, fake
 
 @pytest.mark.parametrize("address", ["http://remote.invalid:4280", "https://name:password@example.invalid", "https://example.invalid/path", "https://", "http://127.0.0.1:0", "http://[broken"])
 def test_invalid_configured_address_is_not_requested(app, client, fake_core, address):
-    login(client, "You")
+    login(client, "Matt")
     app.hub.config.assistant_core_url = address
     response = connect(client, password="x")
     assert response.status_code == 503
@@ -486,7 +486,7 @@ def test_invalid_configured_address_is_not_requested(app, client, fake_core, add
 
 
 def test_expiry_and_malformed_session_fail_closed(app, client, monkeypatch):
-    login(client, "You")
+    login(client, "Matt")
     before = sid(client)
     stale = stale_session(app, before)
     now = int(time.time())

@@ -9,6 +9,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
+pub mod demo_identity;
 pub mod http;
 pub mod import;
 pub mod mcp;

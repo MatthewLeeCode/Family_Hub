@@ -255,10 +255,10 @@ def test_guest_override_and_unlinked_profiles_cannot_forward_mail_requests(clien
     assert client.post("/api/login", json={"guest": True}).status_code == 200
     rejected(403)
     profiles = {p["name"]: p["id"] for p in client.get("/api/state").get_json()["profiles"]}
-    assert client.post("/api/login", json={"profile_id": profiles["Partner"], "admin_id": profiles["You"], "admin_passcode": "1234"}).status_code == 200
+    assert client.post("/api/login", json={"profile_id": profiles["Nicky"], "admin_id": profiles["Matt"], "admin_passcode": "1234"}).status_code == 200
     bind_view(client)
     rejected(403)
-    assert login(client, "You").status_code == 200
+    assert login(client, "Matt").status_code == 200
     rejected(401)
 
 
@@ -275,8 +275,8 @@ def test_cross_origin_and_neighbor_site_mutations_never_reach_core(client, fake_
 
 def test_two_profiles_forward_only_their_server_owned_core_session(app, client, fake_core):
     other = app.test_client()
-    link(client, "You", "matt")
-    link(other, "Partner", "wife")
+    link(client, "Matt", "matt")
+    link(other, "Nicky", "wife")
     for browser, name in ((client, "matt"), (other, "wife")):
         fake_core["response"] = core_response(preview(space_id="space-" + name))
         assert browser.get(PREVIEW).status_code == 200

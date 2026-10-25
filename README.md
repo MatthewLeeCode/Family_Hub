@@ -69,8 +69,10 @@ scripts/run-demo.sh          # macOS / Linux
 scripts\run-demo.bat         # Windows
 ```
 
-Then open <http://localhost:8090>. Profiles: **You** and **Partner**
+Then open <http://localhost:8090>. Fresh demo profiles: **Matt** and **Nicky**
 (admins) and **Nan** (restricted), all with passcode `1234`.
+
+Existing demo profiles are retained. The [explicit offline naming update](docs/demo-profile-names.md) preserves their IDs, PINs, reading data and appearance settings.
 
 ## Your own settings
 

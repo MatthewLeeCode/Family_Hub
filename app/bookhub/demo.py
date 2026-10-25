@@ -166,7 +166,7 @@ def seed(hub):
     if hub.profiles():
         return
     con = hub.con()
-    for name, role, color, can_request in (("You", "admin", "#F0B04A", 1), ("Partner", "admin", "#7FB2E5", 1),
+    for name, role, color, can_request in (("Matt", "admin", "#F0B04A", 1), ("Nicky", "admin", "#7FB2E5", 1),
                                            ("Nan", "member", "#9BD1A8", 0)):
         con.execute(
             "INSERT INTO profiles(name, role, passcode_hash, color, can_request, can_tag, sync_key, created) VALUES(?,?,?,?,?,1,?,?)",
@@ -186,7 +186,7 @@ def seed(hub):
     def key(title):
         return next(b["key"] for b in hub.library.books() if b["title"] == title)
 
-    you = ids["You"]
+    you = ids["Matt"]
     for title, m, rating in (("Wuthering Heights", 2, 3), ("Little Women", 4, 4), ("Persuasion", 6, 5),
                              ("The Time Machine", 8, 4), ("A Christmas Carol", month, 4)):
         hub.save_reading(you, key(title), status="finished", finished=day(m, 14), started=day(m, 2))
@@ -209,7 +209,7 @@ def seed(hub):
     hub.add_tag("mine", key("Persuasion"), "Comfort re-read", you)
     hub.add_tag("mine", key("Emma"), "Book club", you)
 
-    partner, nan = ids["Partner"], ids["Nan"]
+    partner, nan = ids["Nicky"], ids["Nan"]
     hub.save_reading(partner, key("Dracula"), status="finished", finished=day(5, 9))
     hub.set_rating(key("Dracula"), partner, 5)
     hub.set_rating(key("Pride and Prejudice"), partner, 5)

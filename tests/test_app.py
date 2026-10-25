@@ -56,25 +56,25 @@ def test_passcode_and_admin_override(client):
     client.post("/api/logout")
     state = client.get("/api/state").get_json()
     ids = {p["name"]: p["id"] for p in state["profiles"]}
-    r = client.post("/api/login", json={"profile_id": ids["Nan"], "admin_id": ids["You"], "admin_passcode": "1234"})
+    r = client.post("/api/login", json={"profile_id": ids["Nan"], "admin_id": ids["Matt"], "admin_passcode": "1234"})
     assert r.status_code == 200
     me = client.get("/api/state").get_json()["me"]
     assert me["name"] == "Nan" and me["via_admin"] is True
     # a member cannot be used for an override
     client.post("/api/logout")
-    r = client.post("/api/login", json={"profile_id": ids["You"], "admin_id": ids["Nan"], "admin_passcode": "1234"})
+    r = client.post("/api/login", json={"profile_id": ids["Matt"], "admin_id": ids["Nan"], "admin_passcode": "1234"})
     assert r.status_code == 403
 
 
 def test_lockout_after_wrong_tries(client):
     for _ in range(5):
-        assert login(client, "Partner", "9999").status_code == 403
-    assert login(client, "Partner", "1234").status_code == 429
+        assert login(client, "Nicky", "9999").status_code == 403
+    assert login(client, "Nicky", "1234").status_code == 429
 
 
 def test_deleting_a_profile_leaves_nothing_behind(app, client):
     from bookhub import db
-    login(client, "You")
+    login(client, "Matt")
     kid = client.post("/api/profiles", json={"name": "Kid"}).get_json()["id"]
     client.patch("/api/profiles/%d" % kid, json={"can_request_media": True})
     assert kid in json.loads(db.kv_get(app.hub.con(), "media:allowed"))
@@ -96,7 +96,7 @@ def test_guest_can_download_but_not_track(client):
 
 
 def test_tags_ratings_and_search(client):
-    login(client, "You")
+    login(client, "Matt")
     bid = book_id(client, "Dracula")
     assert client.post("/api/books/%d/tags" % bid, json={"kind": "family", "tag": "Spooky season"}).status_code == 200
     assert client.post("/api/books/%d/tags" % bid, json={"kind": "mine", "tag": "Reread soon"}).status_code == 200
@@ -107,7 +107,7 @@ def test_tags_ratings_and_search(client):
     assert "Found family" in detail["tags"]["community"]
     assert "Gothic" in detail["tags"]["epub"]
     assert detail["rating"] == 4
-    assert {"name": "Partner", "rating": 5} in detail["family_ratings"]
+    assert {"name": "Nicky", "rating": 5} in detail["family_ratings"]
 
     tags = client.get("/api/tags?q=spook").get_json()["tags"]
     assert tags and tags[0]["source"] == "family"
@@ -117,7 +117,7 @@ def test_tags_ratings_and_search(client):
 
     # personal tags stay private to the profile
     client.post("/api/logout")
-    login(client, "Partner")
+    login(client, "Nicky")
     other = client.get("/api/books/%d" % bid).get_json()
     assert other["tags"]["mine"] == [] and "Spooky season" in other["tags"]["family"]
 
@@ -129,7 +129,7 @@ def test_restricted_profile(client):
 
 
 def test_personal_and_admin_stats(client):
-    login(client, "You")
+    login(client, "Matt")
     s = client.get("/api/stats/me").get_json()
     assert s["read_year"] == 9
     assert s["read_library"] == 5
@@ -143,11 +143,11 @@ def test_personal_and_admin_stats(client):
     a = client.get("/api/stats/admin").get_json()
     assert a["total"] == 12 and a["added_year"] == 12
     assert a["read_year"] == 9 + 1 + 3
-    assert {f["name"] for f in a["family"]} == {"You", "Partner", "Nan"}
+    assert {f["name"] for f in a["family"]} == {"Matt", "Nicky", "Nan"}
 
 
 def test_recommendations(client):
-    login(client, "You")
+    login(client, "Matt")
     bid = book_id(client, "Persuasion")
     books = client.get("/api/similar/%d" % bid).get_json()["books"]
     titles = [b["title"] for b in books]
@@ -162,15 +162,15 @@ def test_device_sync(app, client):
         book = next(b for b in app.hub.library.books() if b["title"] == "Emma")
         document = kosync.partial_md5(app.hub.library.file_path(book, "EPUB"))
     key = hashlib.md5(b"demo").hexdigest()
-    headers = {"x-auth-user": "You", "x-auth-key": key}
-    assert client.get("/kosync/users/auth", headers={"x-auth-user": "You", "x-auth-key": "bad"}).status_code == 401
+    headers = {"x-auth-user": "Matt", "x-auth-key": key}
+    assert client.get("/kosync/users/auth", headers={"x-auth-user": "Matt", "x-auth-key": "bad"}).status_code == 401
     assert client.get("/kosync/users/auth", headers=headers).status_code == 200
     r = client.put("/kosync/syncs/progress", headers=headers,
                    json={"document": document, "percentage": 0.42, "progress": "/body/x[12]", "device": "Kobo"})
     assert r.status_code == 200
     back = client.get("/kosync/syncs/progress/" + document, headers=headers).get_json()
     assert abs(back["percentage"] - 0.42) < 1e-6 and back["progress"] == "/body/x[12]"
-    login(client, "You")
+    login(client, "Matt")
     emma = next(b for b in client.get("/api/books").get_json()["books"] if b["title"] == "Emma")
     assert emma["status"] == "reading" and emma["percent"] == 42 and emma["device"] == "Kobo"
     client.put("/kosync/syncs/progress", headers=headers, json={"document": document, "percentage": 1.0, "progress": "end"})
@@ -187,14 +187,14 @@ def test_partial_md5_matches_koreader_sampling(tmp_path):
 
 
 def test_export_import_roundtrip(app, client, tmp_path, monkeypatch):
-    login(client, "You")
+    login(client, "Matt")
     export = client.get("/api/admin/export")
     data = json.loads(export.data)
     assert data["format"] == "bookhub-bookdata"
     pride = next(b for b in data["books"].values() if b["title"] == "Pride and Prejudice")
     assert pride["family_tags"] == ["Class difference"]
-    assert pride["ratings"] == {"Partner": 5}
-    assert pride["personal_tags"] == {"You": ["Comfort re-read"]}
+    assert pride["ratings"] == {"Nicky": 5}
+    assert pride["personal_tags"] == {"Matt": ["Comfort re-read"]}
     assert any(t["tag"] == "Slow burn" for t in pride["community_tags"])
     assert "Romance" in pride["epub_tags"]
 
@@ -202,7 +202,7 @@ def test_export_import_roundtrip(app, client, tmp_path, monkeypatch):
     monkeypatch.setenv("BOOKHUB_DATA_DIR", str(tmp_path / "fresh"))
     fresh = create_app(Config())
     c = fresh.test_client()
-    c.post("/api/setup", json={"name": "You", "passcode": "1234"})
+    c.post("/api/setup", json={"name": "Matt", "passcode": "1234"})
     assert c.post("/api/admin/import", json=data).get_json()["books"] == len(data["books"])
     again = json.loads(c.get("/api/admin/export").data)
     pride2 = next(b for b in again["books"].values() if b["title"] == "Pride and Prejudice")
@@ -211,7 +211,7 @@ def test_export_import_roundtrip(app, client, tmp_path, monkeypatch):
 
 
 def test_backup_file_written(app, client):
-    login(client, "You")
+    login(client, "Matt")
     r = client.post("/api/admin/backup").get_json()
     assert (app.hub.config.backups_dir / r["file"]).exists()
 
@@ -234,7 +234,7 @@ def test_downloads_are_copied_to_ingest(app, tmp_path):
 
 def test_outside_book_and_setup_guard(client):
     assert client.post("/api/setup", json={"name": "Z", "passcode": "1234"}).status_code == 409
-    login(client, "You")
+    login(client, "Matt")
     r = client.post("/api/me/outside", json={"title": "North and South", "author": "Elizabeth Gaskell", "pages": 521})
     assert r.status_code == 200
     assert client.get("/api/stats/me").get_json()["read_year"] == 10
@@ -319,7 +319,7 @@ def test_kind_guesses():
 
 
 def test_kinds_filter_and_sorting(client):
-    login(client, "You")
+    login(client, "Matt")
     books = client.get("/api/books?filter=library").get_json()["books"]
     assert {b["kind"] for b in books} == {"Fiction"}  # the demo library is all classic novels
     dracula, emma = book_id(client, "Dracula"), book_id(client, "Emma")
@@ -337,7 +337,7 @@ def test_kinds_filter_and_sorting(client):
     assert sorted(b["title"] for b in data["books"].values() if b["kind"]) == ["Dracula", "Emma"]
     # a profile that cannot edit family tags cannot re-sort books
     client.post("/api/logout")
-    login(client, "Partner")
+    login(client, "Nicky")
     nan = next(p["id"] for p in client.get("/api/state").get_json()["profiles"] if p["name"] == "Nan")
     client.patch("/api/profiles/%d" % nan, json={"can_tag": False})
     client.post("/api/logout")
@@ -364,7 +364,7 @@ def test_connections_are_set_from_the_admin_page(app, client, monkeypatch):
     assert client.get("/api/admin/connections").status_code == 403
     assert client.post("/api/admin/connections", json={"values": {"prowlarr_url": "http://x"}}).status_code == 403
     client.post("/api/logout")
-    login(client, "You")
+    login(client, "Matt")
     assert client.get("/api/state").get_json()["discover_configured"] is False
 
     seen = {}
@@ -409,7 +409,7 @@ def test_connections_are_set_from_the_admin_page(app, client, monkeypatch):
     again = create_app(Config())
     assert again.hub.config.prowlarr_url == "http://prowlarr:9696" and again.hub.config.prowlarr_api_key == "s3cret"
     c = again.test_client()
-    login(c, "You")
+    login(c, "Matt")
     back = c.post("/api/admin/connections", json={"values": {"prowlarr_url": ""}}).get_json()
     fields = {f["name"]: f for g in back["groups"] for f in g["fields"]}
     assert fields["prowlarr_url"]["value"] == "http://from-env:9696" and fields["prowlarr_url"]["source"] == "env"
@@ -465,9 +465,9 @@ def test_devices_belong_to_a_profile(client):
     assert client.patch("/api/devices/%d" % kid, json={"link": "https://example.org/mine"}).status_code == 200
     assert client.get(url).get_json()["devices"][0]["link"] == "https://example.org/mine"
     # another member cannot see or change them; an admin can
-    assert client.get("/api/profiles/%d/devices" % ids["You"]).status_code == 403
+    assert client.get("/api/profiles/%d/devices" % ids["Matt"]).status_code == 403
     client.post("/api/logout")
-    login(client, "Partner")
+    login(client, "Nicky")
     assert len(client.get(url).get_json()["devices"]) == 2
     assert client.delete("/api/devices/%d" % kid).status_code == 200
     assert len(client.get(url).get_json()["devices"]) == 1
@@ -478,7 +478,7 @@ def test_devices_belong_to_a_profile(client):
 
 def test_my_books_and_sending_to_a_kindle(app, client, mail):
     ids = ids_of(client)
-    login(client, "You")
+    login(client, "Matt")
     nan = ids["Nan"]
     kid = client.post("/api/profiles/%d/devices" % nan, json={"kind": "kindle", "name": "Nan's Kindle", "address": "nan@kindle.com", "auto_send": True}).get_json()["id"]
     emma, island = book_id(client, "Emma"), book_id(client, "Treasure Island")
@@ -531,8 +531,8 @@ def test_my_books_and_sending_to_a_kindle(app, client, mail):
     assert {b["title"] for b in mine} == {"Emma", "Treasure Island"} and all(b["on_shelf"] for b in mine)
     assert next(b for b in mine if b["title"] == "Treasure Island")["status"] == "finished"
     assert "family_shelves" not in client.get("/api/books/%d" % emma).get_json()
-    assert client.post("/api/books/%d/shelf" % emma, json={"profile_id": ids["You"], "on": True}).status_code == 403
-    assert client.post("/api/books/%d/reading" % emma, json={"profile_id": ids["You"], "status": "finished"}).status_code == 403
+    assert client.post("/api/books/%d/shelf" % emma, json={"profile_id": ids["Matt"], "on": True}).status_code == 403
+    assert client.post("/api/books/%d/reading" % emma, json={"profile_id": ids["Matt"], "status": "finished"}).status_code == 403
     # taking a book off keeps the history and says which device still has a copy
     r = client.post("/api/books/%d/shelf" % island, json={"on": False}).get_json()
     assert r["on"] is False and r["still_on"] == ["Nan's Kindle"]
@@ -541,7 +541,7 @@ def test_my_books_and_sending_to_a_kindle(app, client, mail):
 
     # shelves travel with the book-data export; the mail password and devices do not
     client.post("/api/logout")
-    login(client, "You")
+    login(client, "Matt")
     export = client.get("/api/admin/export")
     assert b"s3cr3t word" not in export.data and b"nan@kindle.com" not in export.data
     books = json.loads(export.data)["books"]
@@ -552,7 +552,7 @@ def test_private_catalogue_for_reading_apps(app, client):
     import base64
     import xml.etree.ElementTree as ET
     ids = ids_of(client)
-    login(client, "You")
+    login(client, "Matt")
     client.post("/api/books/%d/shelf" % book_id(client, "Persuasion"), json={"on": True})
     client.post("/api/logout")
 
@@ -561,14 +561,14 @@ def test_private_catalogue_for_reading_apps(app, client):
 
     r = client.get("/opds")
     assert r.status_code == 401 and "Basic" in r.headers["WWW-Authenticate"]
-    assert client.get("/opds", headers=auth("You", "1234")).status_code == 401  # the passcode is not the sync password
-    you = auth("You", "demo")
+    assert client.get("/opds", headers=auth("Matt", "1234")).status_code == 401  # the passcode is not the sync password
+    you = auth("Matt", "demo")
     root = client.get("/opds", headers=you)
     assert root.status_code == 200 and b"/opds/mine" in root.data and "kind=navigation" in root.headers["Content-Type"]
     mine = client.get("/opds/mine", headers=you)
     assert b"Persuasion" in mine.data and b"Dracula" not in mine.data
     assert b"application/epub+zip" in mine.data and b"Jane Austen" in mine.data
-    bid = app.hub.library.by_key(next(iter(app.hub.devices.shelf(ids["You"]))))["id"]
+    bid = app.hub.library.by_key(next(iter(app.hub.devices.shelf(ids["Matt"]))))["id"]
     book = client.get("/opds/book/%d/epub" % bid, headers=you)
     assert book.status_code == 200 and book.data[:2] == b"PK"
     assert client.get("/opds/book/%d/epub" % bid).status_code == 401
@@ -673,7 +673,7 @@ def outside(monkeypatch):
 
 
 def test_community_tags_come_from_catalogues(app, client, outside):
-    login(client, "You")
+    login(client, "Matt")
     bid = book_id(client, "Dracula")
     r = client.post("/api/books/%d/lookup" % bid).get_json()
     assert r["added"] >= 5 and r["sources"] == ["Open Library", "Wikidata"] and r["failed"] == []
@@ -728,7 +728,7 @@ def test_matching_refuses_the_wrong_book():
 
 
 def test_admin_can_hide_and_rename_machine_tags(app, client):
-    login(client, "You")
+    login(client, "Matt")
     listed = client.get("/api/admin/tags").get_json()
     gothic = next(t for t in listed["tags"] if t["tag"] == "Gothic")
     assert gothic["count"] >= 1 and "Book file" in gothic["sources"] and gothic["becomes"] is None
@@ -761,7 +761,7 @@ def test_volumes_named_in_the_file_name_are_one_series(app, client):
         con.commit()
     con.close()
     os.utime(library.metadata_db, (2, 2))
-    login(client, "You")
+    login(client, "Matt")
     books = client.get("/api/books").get_json()["books"]
     volumes = [b for b in books if b["series"] == "Cherry Magic!"]
     assert sorted(b["title"] for b in volumes) == ["Cherry Magic! · Volume 1", "Cherry Magic! · Volume 10", "Cherry Magic! · Volume 2"]
@@ -823,7 +823,7 @@ def test_book_downloads_are_named_safely_and_shown_titles_are_tidied(app, client
         con.commit()
     con.close()
     os.utime(library.metadata_db, (3, 3))
-    login(client, "You")
+    login(client, "Matt")
     titles = [b["title"] for b in client.get("/api/books").get_json()["books"]]
     assert "The Bird’s Nest" in titles and not any("â€" in t for t in titles)
     r = client.get("/api/books/%d/download/EPUB" % book_id(client, "Field Notes/Drafts"))
@@ -864,7 +864,7 @@ def test_copies_of_a_book_are_shown_as_one(app, client, tmp_path):
     os.utime(library.metadata_db, (1, 1))  # the library manager changed the library
     assert len(library.books()) == before and len(library.all_books()) == before + 1
 
-    login(client, "You")
+    login(client, "Matt")
     listed = [b for b in client.get("/api/books").get_json()["books"] if b["title"] == "Dracula"]
     assert len(listed) == 1
     shown = listed[0]["id"]
@@ -928,7 +928,7 @@ def test_comics_are_looked_up_by_series_on_comic_vine(app, client, outside):
     catalogues._volumes.clear()
     config = app.hub.config
     assert "comicvine" not in catalogues.active(config)  # no key, not used
-    login(client, "You")
+    login(client, "Matt")
     client.post("/api/admin/connections", json={"values": {"comic_vine_key": "cv-key-1"}})
     assert "comicvine" in catalogues.active(config)
     # the publisher in brackets picks the right series; the most-seen characters and themes become tags
@@ -1022,7 +1022,7 @@ def test_goodreads_links_and_files_are_understood():
 
 def test_goodreads_shelves_and_books_only_on_kindle(app, client, shelves):
     ids = {p["name"]: p["id"] for p in client.get("/api/state").get_json()["profiles"]}
-    nan, you = ids["Nan"], ids["You"]
+    nan, you = ids["Nan"], ids["Matt"]
 
     def book(title, flt=None):
         url = "/api/books" + ("?filter=" + flt if flt else "")
@@ -1052,7 +1052,7 @@ def test_goodreads_shelves_and_books_only_on_kindle(app, client, shelves):
 
     # someone else in the family sees the book, but not whose it is, nor Nan's rating or progress
     client.post("/api/logout")
-    login(client, "You")
+    login(client, "Matt")
     theirs = book("The Long Ships")
     assert theirs["kindle"] and theirs["status"] == "none" and theirs["rating"] == 0 and theirs["finished"] is None
     assert "Nan" not in json.dumps(theirs) and book("The Long Ships", "outside") is None and book("The Long Ships", "kindle")
@@ -1072,7 +1072,7 @@ def test_goodreads_shelves_and_books_only_on_kindle(app, client, shelves):
               "10081041,The Long Ships,Frans G. Bengtsson,,,3,528,2026/02/03,2026/01/02,read\n")
     r = client.post("/api/profiles/%d/goodreads/import" % you, data={"file": (io.BytesIO(export.encode()), "goodreads_library_export.csv")})
     assert r.get_json() == {"books": 1, "changed": 1}
-    assert client.get("/api/admin/elsewhere").get_json()["books"][0]["people"] == ["You", "Nan"]
+    assert client.get("/api/admin/elsewhere").get_json()["books"][0]["people"] == ["Matt", "Nan"]
     assert book("The Long Ships")["rating"] == 3 and book("The Long Ships", "outside")
     bad = client.post("/api/profiles/%d/goodreads/import" % you, data={"file": (io.BytesIO(b"x,y\n1,2\n"), "x.csv")})
     assert bad.status_code == 400
@@ -1099,8 +1099,8 @@ def test_goodreads_shelves_and_books_only_on_kindle(app, client, shelves):
     assert not r["linked"] and r["books"] == 0
     assert book("The Long Ships")["status"] == "finished"  # her history stays
     client.post("/api/logout")
-    login(client, "You")
-    assert client.get("/api/admin/elsewhere").get_json()["books"][0]["people"] == ["You"]
+    login(client, "Matt")
+    assert client.get("/api/admin/elsewhere").get_json()["books"][0]["people"] == ["Matt"]
 
 
 def test_a_kindle_only_book_that_arrives_in_the_library_is_joined_up(app, client, shelves):
@@ -1150,7 +1150,7 @@ def test_covers_can_be_changed_without_touching_the_library(app, client, monkeyp
                   {"key": "/works/W2", "title": "Dracula", "author_name": ["Someone Else"], "cover_i": 66}]}
         if "search.json" in url else {"entries": [{"covers": [55, 77, -1], "publishers": ["Penguin"], "publish_date": "2003"}]}))
 
-    login(client, "You")
+    login(client, "Matt")
     bid = book_id(client, "Dracula")
     with app.app_context():
         library_files = sorted(str(p) for p in app.hub.library.dir.rglob("*"))
@@ -1230,7 +1230,7 @@ def test_suggestions_come_from_what_someone_has_enjoyed(app, client, monkeypatch
     monkeypatch.setattr(recommend.catalogues, "_get", fake)
 
     client.post("/api/logout")
-    login(client, "Partner")
+    login(client, "Nicky")
     start = client.get("/api/recommendations").get_json()
     assert not start["ready"] and start["books"] == [] and start["need"] == 5
     view = client.get("/api/books?filter=foryou").get_json()
@@ -1257,7 +1257,7 @@ def test_suggestions_come_from_what_someone_has_enjoyed(app, client, monkeypatch
     assert found["Lady Susan"]["reason"] == "More by Jane Austen" and found["Lady Susan"]["cover_id"] == 2
     assert found["A Modern Romance"]["reason"].startswith("Because you like ")
     # what went out: authors and subjects, nothing about who asked
-    assert all(set(p) <= {"author", "q", "fields", "sort", "limit"} for p in asked) and "Partner" not in json.dumps(asked)
+    assert all(set(p) <= {"author", "q", "fields", "sort", "limit"} for p in asked) and "Nicky" not in json.dumps(asked)
     assert not any("Bronte" in json.dumps(p) for p in asked)  # an author she rated 1 star is not asked about
 
     # "Not for me" removes a book for good; the list is private to its owner
@@ -1268,7 +1268,7 @@ def test_suggestions_come_from_what_someone_has_enjoyed(app, client, monkeypatch
     assert "Lady Susan" not in [b["title"] for b in client.get("/api/recommendations").get_json()["books"]]
     # switched off under Connections, nothing is asked
     client.post("/api/logout")
-    login(client, "You")
+    login(client, "Matt")
     client.post("/api/admin/connections", json={"values": {"tag_lookups": "off"}})
     before = len(asked)
     with app.app_context():
@@ -1353,7 +1353,7 @@ class FakeSeriesServer:
 def series_server(app, client, monkeypatch):
     fake = FakeSeriesServer()
     monkeypatch.setattr(series.Series, "gql", lambda self, query, variables=None, config=None, timeout=0: fake.gql(query, variables))
-    login(client, "You")
+    login(client, "Matt")
     client.post("/api/admin/connections", json={"values": {"series_url": "http://suwayomi:4567", "series_pass": "s3cret"}})
     return fake
 
@@ -1383,7 +1383,7 @@ def test_series_are_for_everyone_signed_in_unless_switched_off(client, series_se
 
     # An admin can switch the shelf off for one profile; the profile cannot switch it back on.
     client.post("/api/logout")
-    login(client, "You")
+    login(client, "Matt")
     client.patch("/api/profiles/%d" % nan["id"], json={"can_series": False})
     client.post("/api/logout")
     login(client, "Nan")
@@ -1443,7 +1443,7 @@ def test_series_shelf_search_follow_and_reading(client, series_server):
 
 
 def test_library_can_be_asked_for_books_or_graphic_novels_only(client):
-    login(client, "You")
+    login(client, "Matt")
     everything = client.get("/api/books").get_json()["books"]
     target = next(b for b in everything if b["title"] == "Dracula")
     assert client.post("/api/books/kind", json={"ids": [target["id"]], "kind": kinds.GRAPHIC}).status_code == 200
@@ -1463,7 +1463,7 @@ def test_books_show_what_readers_at_large_rate_them(app, client, monkeypatch):
 
     monkeypatch.setattr(catalogues, "open_library_doc", doc)
     monkeypatch.setattr(readers.time, "sleep", lambda s: None)
-    login(client, "You")
+    login(client, "Matt")
     assert all(b["readers"] is None for b in client.get("/api/books").get_json()["books"])
     with app.app_context():
         hub = app.hub
@@ -1479,7 +1479,7 @@ def test_books_show_what_readers_at_large_rate_them(app, client, monkeypatch):
             "<item><title>Nobody Rated This</title><book_id>1</book_id><author_name>A. Writer</author_name>"
             "<average_rating>0.00</average_rating></item></channel></rss>", "read")
         assert [i["average"] for i in feed] == [4.06, 4.02, None]
-        me = next(p["id"] for p in hub.profiles() if p["name"] == "You")
+        me = next(p["id"] for p in hub.profiles() if p["name"] == "Matt")
         goodreads.apply(hub, me, feed)
         # Open Library does not overwrite a Goodreads figure afterwards.
         con = hub.con()
@@ -1516,7 +1516,7 @@ def db_key(hub, title):
 
 
 def test_nightly_copy_to_a_second_disk_keeps_everything(app, client, tmp_path):
-    login(client, "You")
+    login(client, "Matt")
     hub, config = app.hub, app.hub.config
     # Not set up: nothing is copied and the Admin page says so.
     assert client.get("/api/stats/admin").get_json()["services"]["second_copy"]["configured"] is False
@@ -1609,7 +1609,7 @@ def test_ratings_take_the_answer_most_people_stand_behind(app, client, monkeypat
         raise catalogues.LookupError_("it refused the API key")
 
     monkeypatch.setattr(catalogues, "hardcover_info", hardcover)
-    login(client, "You")
+    login(client, "Matt")
     with app.app_context():
         hub = app.hub
         book = next(b for b in hub.library.books() if b["title"] == "Dracula")
@@ -1623,7 +1623,7 @@ def test_ratings_take_the_answer_most_people_stand_behind(app, client, monkeypat
 
 
 def test_my_books_lists_where_each_book_stands_on_my_devices(client):
-    login(client, "You")
+    login(client, "Matt")
     me = client.get("/api/state").get_json()["me"]["id"]
     assert client.get("/api/me/shelf").get_json() == {"devices": [], "books": {}}
     client.post("/api/profiles/%d/devices" % me, json={"name": "My Kindle", "kind": "kindle", "address": "me@kindle.com", "auto_send": False})
@@ -1732,7 +1732,7 @@ def test_spare_copies_are_judged_and_removed_through_the_library_manager(app, cl
     con.commit()
     con.close()
     hub.library.refresh(force=True)
-    login(client, "You")
+    login(client, "Matt")
     entries = len(hub.library.all_books())
     key = {p["title"]: p for p in client.get("/api/admin/duplicates").get_json()["sets"]}
     assert {t: p["cls"] for t, p in key.items()} == {"Dracula": "identical", "Emma": "duplicate", "Persuasion": "merge",
@@ -1812,7 +1812,7 @@ def test_spare_copies_are_judged_and_removed_through_the_library_manager(app, cl
 
 
 def test_household_look_is_chosen_by_an_admin(app, client):
-    login(client, "You")
+    login(client, "Matt")
     look = client.get("/api/state").get_json()["look"]
     assert (look["design"], look["theme"], look["scene"], look["transition"], look["accent"]) == ("minimalist", "dark", "orbit", True, None)
     catalogue = client.get("/api/admin/look").get_json()["designs"]
@@ -2083,7 +2083,7 @@ def media_servers(app, monkeypatch):
 
 
 def test_connect_everything_wires_the_services_once(client, media_servers):
-    login(client, "You")
+    login(client, "Matt")
     steps = client.post("/api/admin/media/connect").get_json()["steps"]
     by_step = {s["step"]: s for s in steps}
     for name in ("Radarr → media folder", "Sonarr → qBittorrent", "Prowlarr → Radarr", "Prowlarr → Sonarr", "qBittorrent → download folders"):
@@ -2112,7 +2112,7 @@ def test_connect_everything_wires_the_services_once(client, media_servers):
 def test_films_and_shows_are_requested_by_permitted_profiles(client, media_servers):
     login(client, "Nan")
     assert client.get("/api/media/search?kind=film&q=metro").status_code == 403  # members need the switch
-    login(client, "You")
+    login(client, "Matt")
     film_before = client.post("/api/media/request", json={"kind": "film", "id": 19})
     assert film_before.status_code == 502 and "Connect everything" in film_before.get_json()["error"]  # no media folder yet
     client.post("/api/admin/media/connect")
@@ -2133,21 +2133,21 @@ def test_films_and_shows_are_requested_by_permitted_profiles(client, media_serve
     assert show["monitorNewItems"] == "all" and "monitor" not in show["addOptions"]
     # Only admins remove, and the files go too.
     assert client.delete("/api/media/film/1").status_code == 403
-    login(client, "You")
+    login(client, "Matt")
     removed = client.delete("/api/media/film/1").get_json()["removed"]
     assert removed["title"] == "Metropolis"
     assert media_servers.deleted == [("radarr", "movie/1", {"deleteFiles": "true", "addImportListExclusion": "false"})]
 
 
 def test_downloads_say_who_asked_and_the_vpn_state(client, media_servers):
-    login(client, "You")
+    login(client, "Matt")
     client.post("/api/admin/media/connect")
     client.post("/api/media/request", json={"kind": "show", "id": 99, "seasons": "all"})
     media_servers.arr["sonarr"]["queue"] = [
         {"seriesId": 1, "series": {"title": "Long Show"}, "episode": {"seasonNumber": 1}, "size": 100, "sizeleft": 60, "status": "downloading"},
         {"seriesId": 1, "series": {"title": "Long Show"}, "episode": {"seasonNumber": 1}, "size": 100, "sizeleft": 20, "status": "downloading"}]
     q = client.get("/api/media/queue").get_json()
-    assert q["items"] == [dict(q["items"][0], title="Long Show · Season 1", items=2, progress=60, requested_by="You")]
+    assert q["items"] == [dict(q["items"][0], title="Long Show · Season 1", items=2, progress=60, requested_by="Matt")]
     assert q["vpn"] == {"configured": False, "ok": False, "message": "Waiting for VPN · not set up"}
     assert client.get("/api/media/poster-remote?url=https://evil.example/x.jpg").status_code == 404
 
@@ -2157,7 +2157,7 @@ def test_admins_delete_a_book_through_the_library_manager(app, client):
     login(client, "Nan")
     emma = book_id(client, "Emma")
     assert client.delete("/api/books/%d" % emma).status_code == 403
-    login(client, "You")
+    login(client, "Matt")
     assert "sign-in is not set up" in client.delete("/api/books/%d" % emma).get_json()["error"]
     client.post("/api/admin/connections", json={"values": {"cwa_api_url": "http://manager:8083", "cwa_user": "admin", "cwa_pass": "pw"}})
     fake = FakeLibraryManager(hub.config.library_dir)
@@ -2171,7 +2171,7 @@ def test_admins_delete_a_book_through_the_library_manager(app, client):
 
 def test_connect_everything_reports_a_wrong_qbittorrent_password(client, media_servers):
     media_servers.qbit_password_ok = False  # still the temporary password from the first start
-    login(client, "You")
+    login(client, "Matt")
     r = client.post("/api/admin/media/connect")
     assert r.status_code == 200
     by_step = {s["step"]: s for s in r.get_json()["steps"]}
@@ -2180,7 +2180,7 @@ def test_connect_everything_reports_a_wrong_qbittorrent_password(client, media_s
 
 
 def test_picking_a_release_for_a_show_searches_one_season(client, media_servers):
-    login(client, "You")
+    login(client, "Matt")
     client.post("/api/admin/media/connect")
     client.post("/api/media/request", json={"kind": "show", "id": 99, "seasons": "all"})
     releases = client.get("/api/media/releases/show/1").get_json()["releases"]
@@ -2195,7 +2195,7 @@ def test_picking_a_release_for_a_show_searches_one_season(client, media_servers)
 
 
 def test_look_again_searches_for_a_better_version(client, media_servers):
-    login(client, "You")
+    login(client, "Matt")
     client.post("/api/admin/media/connect")
     client.post("/api/media/request", json={"kind": "film", "id": 19})
     client.post("/api/media/request", json={"kind": "show", "id": 99, "seasons": "all"})
@@ -2214,7 +2214,7 @@ def test_look_again_searches_for_a_better_version(client, media_servers):
 
 
 def test_stopping_and_starting_the_search_and_picking_a_version(client, media_servers):
-    login(client, "You")
+    login(client, "Matt")
     client.post("/api/admin/media/connect")
     client.post("/api/media/request", json={"kind": "film", "id": 19})
     radarr = media_servers.arr["radarr"]
@@ -2233,7 +2233,7 @@ def test_stopping_and_starting_the_search_and_picking_a_version(client, media_se
     login(client, "Nan")
     assert client.post("/api/media/looking/film/1", json={"on": False}).status_code == 403
     assert client.post("/api/media/grab", json={"kind": "film", "guid": "g1", "indexer_id": 2}).status_code == 403
-    login(client, "You")
+    login(client, "Matt")
     client.patch("/api/profiles/%d" % nan, json={"can_request_media": True})
     login(client, "Nan")
     assert client.get("/api/media/releases/film/1").status_code == 200
@@ -2241,7 +2241,7 @@ def test_stopping_and_starting_the_search_and_picking_a_version(client, media_se
 
 
 def test_every_download_can_be_paused_and_put_in_order(client, media_servers):
-    login(client, "You")
+    login(client, "Matt")
     client.post("/api/media/request", json={"kind": "film", "id": 19})  # fails (not connected yet), which is fine here
     media_servers.arr["radarr"]["items"].append({"id": 1, "title": "Metropolis"})
     a, b = "a" * 40, "B" * 40
@@ -2271,7 +2271,7 @@ def test_every_download_can_be_paused_and_put_in_order(client, media_servers):
 
 
 def test_a_download_can_be_deleted_from_the_whole_hub(client, media_servers):
-    login(client, "You")
+    login(client, "Matt")
     client.post("/api/admin/media/connect")
     client.post("/api/media/request", json={"kind": "film", "id": 19})
     film, book = "f" * 40, "e" * 40
@@ -2300,7 +2300,7 @@ def test_admin_links_to_each_program(client, monkeypatch):
             raise requests.ConnectionError("not running")
         return None
     monkeypatch.setattr(requests, "get", fake_get)
-    login(client, "You")
+    login(client, "Matt")
     services = {x["id"]: x for x in client.get("/api/admin/services").get_json()["services"]}
     assert services["radarr"]["running"] is True and services["radarr"]["port"] == 7878
     assert services["bazarr"]["running"] is False
@@ -2310,7 +2310,7 @@ def test_admin_links_to_each_program(client, monkeypatch):
 
 def test_book_downloads_work_like_films(app, client, media_servers):
     from bookhub import db as bdb
-    login(client, "You")
+    login(client, "Matt")
     nan = next(p["id"] for p in client.get("/api/state").get_json()["profiles"] if p["name"] == "Nan")
     client.patch("/api/profiles/%d" % nan, json={"can_request": True, "can_request_media": False})
     with app.app_context():
@@ -2348,7 +2348,7 @@ def test_book_downloads_work_like_films(app, client, media_servers):
 
 def test_a_running_search_says_how_many_sites_have_answered(client, media_servers):
     from datetime import datetime, timedelta, timezone
-    login(client, "You")
+    login(client, "Matt")
     now = datetime.now(timezone.utc)
     stamp = lambda secs: (now - timedelta(seconds=secs)).strftime("%Y-%m-%dT%H:%M:%S.1234567Z")
     media_servers.prowlarr_history = [
@@ -2363,7 +2363,7 @@ def test_a_running_search_says_how_many_sites_have_answered(client, media_server
 
 def test_a_show_lists_its_episodes_with_where_to_watch_each(app, client, media_servers):
     from bookhub import settings
-    login(client, "You")
+    login(client, "Matt")
     client.post("/api/admin/media/connect")
     client.post("/api/media/request", json={"kind": "show", "id": 99, "seasons": "all"})
     with app.app_context():
@@ -2378,7 +2378,7 @@ def test_a_show_lists_its_episodes_with_where_to_watch_each(app, client, media_s
 
 def test_versions_appear_as_sites_answer_and_one_can_be_picked_early(client, media_servers):
     import time
-    login(client, "You")
+    login(client, "Matt")
     client.post("/api/admin/media/connect")
     client.post("/api/media/request", json={"kind": "film", "id": 19})
     job = client.post("/api/media/versions/film/1").get_json()["job"]
@@ -2403,7 +2403,7 @@ def test_versions_appear_as_sites_answer_and_one_can_be_picked_early(client, med
 
 
 def test_download_speed_can_be_limited_and_slowed(client, media_servers):
-    login(client, "You")
+    login(client, "Matt")
     d = client.get("/api/media/speed").get_json()
     assert d["down_now"] == 3145728 and d["down_limit"] == 0 and d["slow_mode"] is False and d["can_change"] is True
     d = client.post("/api/media/speed", json={"down_limit": 5 * 1048576, "up_limit": 512 * 1024, "slow_down": 1048576}).get_json()
@@ -2419,7 +2419,7 @@ def test_download_speed_can_be_limited_and_slowed(client, media_servers):
 
 
 def test_a_film_being_downloaded_says_so(client, media_servers):
-    login(client, "You")
+    login(client, "Matt")
     client.post("/api/admin/media/connect")
     client.post("/api/media/request", json={"kind": "film", "id": 19})
     media_servers.arr["radarr"]["queue"] = [{"movieId": 1, "size": 200, "sizeleft": 50}]
@@ -2436,7 +2436,7 @@ def test_jellyfin_is_asked_with_the_current_sign_in_header():
 
 
 def test_whats_happening_tells_the_story_of_a_search(client, media_servers):
-    login(client, "You")
+    login(client, "Matt")
     client.post("/api/admin/media/connect")
     client.post("/api/media/request", json={"kind": "film", "id": 19})
     radarr = media_servers.arr["radarr"]
@@ -2456,7 +2456,7 @@ def test_whats_happening_tells_the_story_of_a_search(client, media_servers):
     activity = client.get("/api/media/activity/film/1").get_json()
     steps = activity["steps"]
     texts = [s["text"] for s in steps]
-    assert texts[0].startswith("Requested by You")
+    assert texts[0].startswith("Requested by Matt")
     assert "Looked at Quiet Site · nothing there" in texts
     assert "Looked at Example Tracker · 10 results" in texts  # two pages of one search, added up
     assert any(t.startswith("Best version found: Metropolis.1927.2160p (Bluray-2160p) · from Example Tracker") for t in texts)
@@ -2474,7 +2474,7 @@ def test_whats_happening_tells_the_story_of_a_search(client, media_servers):
 
 
 def test_downloads_go_where_they_can_be_filed_and_say_when_they_cannot(client, media_servers):
-    login(client, "You")
+    login(client, "Matt")
     # One that went to qBittorrent's default folder before: moved into its category's folder.
     media_servers.torrents = [{"hash": "a" * 40, "category": "movies", "auto_tmm": False},
                               {"hash": "b" * 40, "category": "books", "auto_tmm": False}]
@@ -2495,7 +2495,7 @@ def test_downloads_go_where_they_can_be_filed_and_say_when_they_cannot(client, m
 
 
 def test_asking_twice_and_services_that_are_away(client, media_servers):
-    login(client, "You")
+    login(client, "Matt")
     client.post("/api/admin/media/connect")
     first = client.post("/api/media/request", json={"kind": "film", "id": 19}).get_json()
     again = client.post("/api/media/request", json={"kind": "film", "id": 19})  # from a second screen, say
@@ -2514,7 +2514,7 @@ def test_asking_twice_and_services_that_are_away(client, media_servers):
 
 def test_connect_everything_passes_a_changed_qbittorrent_password_on(app, client, media_servers):
     from bookhub import settings
-    login(client, "You")
+    login(client, "Matt")
     client.post("/api/admin/media/connect")
     with app.app_context():
         settings.save(app.hub, {"qbit_pass": "a-new-password"})
@@ -2528,10 +2528,10 @@ def test_connect_everything_passes_a_changed_qbittorrent_password_on(app, client
 def test_a_failed_write_does_not_keep_the_database_locked(app, client):
     import sqlite3
     import threading
-    login(client, "You")
+    login(client, "Matt")
     ids = ids_of(client)
     # Renaming Nan to a name already taken fails part-way through a write.
-    assert client.patch("/api/profiles/%d" % ids["Nan"], json={"name": "Partner"}).status_code == 409
+    assert client.patch("/api/profiles/%d" % ids["Nan"], json={"name": "Nicky"}).status_code == 409
     result = {}
 
     def other_thread():
@@ -2559,7 +2559,7 @@ def test_passcode_tries_sent_side_by_side_are_all_counted(app):
     def guess(n):
         c = app.test_client()
         start.wait()
-        codes.append(c.post("/api/login", json={"profile_id": ids["Partner"], "passcode": "99%02d" % n}).status_code)
+        codes.append(c.post("/api/login", json={"profile_id": ids["Nicky"], "passcode": "99%02d" % n}).status_code)
 
     workers = [threading.Thread(target=guess, args=(n,)) for n in range(10)]
     for w in workers:
@@ -2636,7 +2636,7 @@ def test_pictures_passed_on_from_other_servers_are_only_ever_pictures(client, mo
 
 def test_json_that_is_not_an_object_is_refused_plainly(client):
     assert client.post("/api/login", json=[1, 2]).status_code == 400
-    login(client, "You")
+    login(client, "Matt")
     r = client.post("/api/books/kind", json=["Dracula"])
     assert r.status_code == 400 and r.get_json()["error"]
 
@@ -2666,7 +2666,7 @@ def test_a_download_nobody_shares_waits_at_the_back_until_someone_does(app, clie
     sent = [name for name, _ in media_servers.qbit_posts]
     assert "bottomPrio" in sent and "stop" in sent
     stuck["state"] = "stoppedDL"
-    login(client, "You")
+    login(client, "Matt")
     rows = client.get("/api/media/torrents").get_json()["torrents"]
     assert [r["name"] for r in rows] == ["Busy.Film.2001", "Lost.Film.1950"]  # it waits after the rest
     assert rows[1]["state"] == "Waiting for seed" and rows[1]["waiting_seed"] and rows[1]["next_check"]
@@ -2714,7 +2714,7 @@ def test_films_on_the_disk_are_recognised_filed_and_spares_deleted(app, client, 
     ]
     login(client, "Nan")
     assert client.get("/api/admin/media/sort?kind=film").status_code == 403
-    login(client, "You")
+    login(client, "Matt")
     d = client.get("/api/admin/media/sort?kind=film").get_json()
     assert (root / "unsorted" / "films").is_dir() and d["folders"]["unsorted"] == "stack/data/unsorted/films"
     status = {i["name"]: i["status"] for i in d["items"]}
@@ -2762,7 +2762,7 @@ def test_books_without_real_details_are_found_and_put_right(app, client, tmp_pat
     con.close()
     hub.library.refresh(force=True)
     old_key = hub.library.get(emma)["key"]
-    login(client, "You")
+    login(client, "Matt")
     with app.app_context():
         nan = next(p for p in hub.profiles() if p["name"] == "Nan")
         from bookhub import db
@@ -2818,7 +2818,7 @@ def test_settings_saved_on_the_admin_page_go_into_the_env_file(app, client, tmp_
     app.hub.config.config_file = str(env)
     with app.app_context():
         settings.apply(app.hub)  # as when Family Hub starts
-    login(client, "You")
+    login(client, "Matt")
     d = client.get("/api/admin/connections").get_json()
     assert d["in_file"]
     # The older database value moved into the file, and out of the database.
@@ -2858,7 +2858,7 @@ def test_the_setup_file_carries_the_whole_setup_locked(app, client, tmp_path):
     con.commit()
     con.close()
     app.hub.config.config_file, app.hub.config.stack_dir = str(env), stack
-    login(client, "You")
+    login(client, "Matt")
     assert client.post("/api/admin/setup-file", json={"passphrase": "short"}).status_code == 400
     r = client.post("/api/admin/setup-file", json={"passphrase": "correct horse battery"})
     assert r.status_code == 200 and r.headers["Content-Disposition"].startswith("attachment; filename=family-hub-setup-")
@@ -2892,7 +2892,7 @@ def test_the_setup_file_carries_the_whole_setup_locked(app, client, tmp_path):
 
 def test_connect_everything_gives_each_program_the_same_sign_in(app, client, media_servers):
     app.hub.config.services_user, app.hub.config.services_pass = "admin", "Shared-pw-1!"
-    login(client, "You")
+    login(client, "Matt")
     steps = {x["step"]: x for x in client.post("/api/admin/media/connect").get_json()["steps"]}
     assert steps["Sign-in for each program's page"]["ok"], steps["Sign-in for each program's page"]
     for name in ("radarr", "sonarr", "prowlarr"):

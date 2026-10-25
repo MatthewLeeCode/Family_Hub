@@ -33,7 +33,7 @@ def main():
         from . import demo
         with app.app_context():
             demo.seed(app.hub)
-        print("\nDemo profiles: 'You' (admin, passcode 1234), 'Partner' (admin, 1234), 'Nan' (member, 1234)")
+        print("\nFresh demo profiles: 'Matt' (admin, passcode 1234), 'Nicky' (admin, 1234), 'Nan' (member, 1234). Existing profiles are retained.")
     if not app.hub.library.available:
         print("Warning: no Calibre library found at %s (metadata.db is missing)." % config.library_dir, file=sys.stderr)
     print("Family Hub is running: http://localhost:%d\n" % config.port)

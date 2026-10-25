@@ -4,7 +4,7 @@ Family Hub now has an **Assistant** destination. It uses the separate Rust assis
 
 ## Available now
 
-- Sign into an assistant account from an ordinary signed-in Family Hub profile. Guest and administrator-override sessions cannot use it. The temporary local demonstration accounts are `matt` / `demo-matt` and `alex` / `demo-alex`.
+- Sign into an assistant account from an ordinary signed-in Family Hub profile. Guest and administrator-override sessions cannot use it. Fresh or explicitly migrated local demonstrations use `matt` / `demo-matt` and `nicky` / `demo-nicky`. An older core retains `alex` / `demo-alex` until its separate explicit migration; renaming the Family Hub profile alone does not change a core login or password.
 - Switch between the account's private workspace and its shared spaces. The selected workspace follows navigation within Assistant.
 - Create conversations, send messages, retain unsent drafts while changing conversations or Assistant pages, and stop work. Enter sends; Shift + Enter inserts a line; IME composition does not accidentally submit. Drafts are kept in memory for the open page, not browser storage.
 - Browse conversations in a panel shown only on Chat. It is on the right on larger screens and below the conversation on narrower screens.

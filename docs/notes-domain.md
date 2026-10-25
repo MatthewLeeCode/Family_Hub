@@ -44,7 +44,7 @@ Create an operator mapping JSON file using the actual numeric IDs in the synthet
 {
   "profiles": [
     {"profile_id": 1, "core_subject": "user-matt", "private_space": "space-matt", "name": "Matt"},
-    {"profile_id": 2, "core_subject": "user-alex", "private_space": "space-alex", "name": "Alex"}
+    {"profile_id": 2, "core_subject": "user-alex", "private_space": "space-alex", "name": "Nicky"}
   ],
   "shared_space": "space-household",
   "shared_name": "Household"

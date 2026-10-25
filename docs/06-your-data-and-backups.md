@@ -53,10 +53,10 @@ you can open and read. For each book it holds:
   "epub_tags": ["Classic", "Romance"],
   "community_tags": [{"tag": "Slow burn", "source": "pack:Starter classics"}],
   "family_tags": ["Class difference"],
-  "personal_tags": {"You": ["Comfort re-read"]},
-  "ratings": {"You": 4, "Partner": 5},
-  "shelves": ["You"],
-  "reading": {"You": {"status": "reading", "percent": 62.0, "started": "2026-10-01", "finished": null, "source": "device"}}
+  "personal_tags": {"Matt": ["Comfort re-read"]},
+  "ratings": {"Matt": 4, "Nicky": 5},
+  "shelves": ["Matt"],
+  "reading": {"Matt": {"status": "reading", "percent": 62.0, "started": "2026-10-01", "finished": null, "source": "device"}}
 }
 ```
 

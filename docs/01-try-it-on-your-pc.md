@@ -14,9 +14,11 @@ shows you every screen. Level 2 runs the real setup with your own books.
    - **macOS / Linux:** run `scripts/run-demo.sh` in a terminal
 3. Open <http://localhost:8090> in a browser.
 4. Pick a profile. All three use passcode `1234`:
-   - **You** and **Partner** are admins.
+   - **Matt** and **Nicky** are admins in a fresh demo.
    - **Nan** is a restricted profile.
    - **Guest** needs no passcode.
+
+Existing demo names are not changed by startup. See the [offline profile naming update](demo-profile-names.md) for an existing sample directory.
 
 The demo creates a `demo` folder holding twelve placeholder books and some
 sample reading history. Delete that folder to start again from scratch.

@@ -52,7 +52,7 @@ def test_requires_a_real_profile(client):
 
 
 def test_personal_choice_inherits_and_does_not_change_partner(client):
-    login(client, "You")
+    login(client, "Matt")
     assert client.post("/api/admin/look", json={"theme": "paper", "scene": "loops", "accent": 150}).status_code == 200
     before = client.get("/api/personal-look").get_json()
     assert before["overrides"] == {} and before["revision"] == 0
@@ -64,19 +64,19 @@ def test_personal_choice_inherits_and_does_not_change_partner(client):
     assert 'data-layout="quiet"' in client.get("/").get_data(as_text=True)
     client.post("/api/logout")
     assert 'data-layout="family"' in client.get("/").get_data(as_text=True)
-    login(client, "Partner")
+    login(client, "Nicky")
     partner = client.get("/api/personal-look").get_json()
     assert partner["overrides"] == {} and partner["look"]["theme"] == "paper"
     assert partner["look"]["layout"] == "family"
     assert save(client, {"layout": "compact"}).status_code == 200
-    login(client, "You")
+    login(client, "Matt")
     # Explicit overrides stay fixed, inherited fields follow subsequent family changes.
     assert client.post("/api/admin/look", json={"theme": "light", "scene": "warp", "accent": 25}).status_code == 200
     mine = client.get("/api/personal-look").get_json()
     assert mine["look"]["theme"] == "dark" and mine["look"]["scene"] == "warp" and mine["look"]["accent"] == 25
     assert mine["household"]["theme"] == "light"
     assert save(client, {}, revision=1).get_json()["look"]["theme"] == "light"
-    login(client, "Partner")
+    login(client, "Nicky")
     assert client.get("/api/personal-look").get_json()["look"]["layout"] == "compact"
 
 
@@ -97,7 +97,7 @@ def test_restricted_member_can_style_but_not_change_permissions(client):
     {"accent": True}, {"accent": 3.5}, {"accent": "195"}, {"accent": -1}, {"accent": 360},
     {"theme": "light", "role": "admin"}])
 def test_invalid_preferences_are_atomic(client, overrides):
-    login(client, "Partner")
+    login(client, "Nicky")
     assert save(client, {"theme": "dark", "layout": "quiet"}).status_code == 200
     before = client.get("/api/personal-look").get_json()
     assert save(client, overrides, revision=1).status_code == 400
@@ -106,22 +106,22 @@ def test_invalid_preferences_are_atomic(client, overrides):
 
 @pytest.mark.parametrize("revision", [-1, True, "1", 1.5, None, 10**100])
 def test_invalid_revision_is_rejected(client, revision):
-    login(client, "Partner")
+    login(client, "Nicky")
     assert save(client, {"layout": "quiet"}, revision).status_code == 400
     assert client.get("/api/personal-look").get_json()["revision"] == 0
 
 
 def test_cannot_supply_a_different_identity_even_as_admin(client):
-    login(client, "You")
+    login(client, "Matt")
     for body in ({"profile_id": 2, "overrides": {"layout": "quiet"}, "revision": 0},
                  {"overrides": {"profile_id": 2}, "revision": 0}, [], None):
         assert client.post("/api/personal-look", json=body).status_code == 400
-    login(client, "Partner")
+    login(client, "Nicky")
     assert client.get("/api/personal-look").get_json()["overrides"] == {}
 
 
 def test_stale_tab_cannot_overwrite_save_or_reset(client):
-    login(client, "You")
+    login(client, "Matt")
     assert save(client, {"layout": "quiet"}).status_code == 200
     assert save(client, {"layout": "compact"}).status_code == 409
     assert save(client, {}, revision=1).get_json()["revision"] == 2
@@ -132,26 +132,26 @@ def test_stale_tab_cannot_overwrite_save_or_reset(client):
 
 
 def test_explicit_default_accent_differs_from_inheritance(client):
-    login(client, "You")
+    login(client, "Matt")
     client.post("/api/admin/look", json={"accent": 195})
     assert save(client, {"accent": None}).get_json()["look"]["accent"] is None
     assert save(client, {}, revision=1).get_json()["look"]["accent"] == 195
 
 
 def test_preferences_persist_and_profile_delete_cascades(app, client):
-    partner = login(client, "Partner")
+    partner = login(client, "Nicky")
     assert save(client, {"layout": "compact", "theme": "paper"}).status_code == 200
     other = app.test_client()
-    login(other, "Partner")
+    login(other, "Nicky")
     assert other.get("/api/personal-look").get_json()["overrides"] == {"layout": "compact", "theme": "paper"}
-    login(client, "You")
+    login(client, "Matt")
     assert client.delete("/api/profiles/%d" % partner).status_code == 200
     assert app.hub.con().execute("SELECT 1 FROM personal_looks WHERE profile_id=?", (partner,)).fetchone() is None
     assert other.get("/api/personal-look").status_code == 401
 
 
 def test_invalid_stored_styles_fall_back_safely(app, client):
-    pid = login(client, "You")
+    pid = login(client, "Matt")
     save(client, {"layout": "quiet"})
     con = app.hub.con()
     for document in ('not json', json.dumps({"layout": "quiet", "fonts": "https://untrusted.invalid"}), '[]'):
