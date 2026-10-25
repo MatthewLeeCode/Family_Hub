@@ -162,6 +162,30 @@ async function releaseAndSettle(page, held, body) {
   await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => resolve())));
 }
 
+test('navigation keeps Media routes and visible keyboard focus without an active side stripe', async (t) => {
+  const f = await fixture(t);
+  const media = f.page.locator('#side').getByRole('link', { name: 'Media', exact: true });
+  assert.equal(await media.getAttribute('href'), '#/movies');
+  assert.equal(await f.page.getByRole('link', { name: 'Movies and TV Shows', exact: true }).count(), 0);
+  const current = f.page.locator('#side nav a[aria-current]');
+  const output = path.resolve(__dirname, '../.test-runs/navigation-polish'); mkdirSync(output, { recursive: true });
+  for (const layout of ['family', 'quiet', 'compact']) {
+    for (const theme of ['dark', 'light', 'paper', 'blueprint']) {
+      await f.page.evaluate(({ layout, theme }) => { Object.assign(document.documentElement.dataset, { layout, theme }); }, { layout, theme });
+      assert.equal(await current.evaluate((node) => getComputedStyle(node).boxShadow), 'none');
+      await f.page.keyboard.press('Tab');
+      await media.focus();
+      assert.deepEqual(await media.evaluate((node) => {
+        const style = getComputedStyle(node);
+        return [node.matches(':focus-visible'), style.outlineStyle, style.outlineWidth];
+      }), [true, 'solid', '2px']);
+    }
+    await f.page.evaluate(() => { document.documentElement.dataset.theme = 'dark'; });
+    await f.page.screenshot({ path: path.join(output, layout + '.png'), fullPage: true });
+  }
+  assert.equal(f.requests.filter((request) => request.method !== 'GET').length, 0);
+});
+
 test('scoped browsing and preview never create a draft without a request', async (t) => {
   const f = await fixture(t); await f.ready();
   assert.equal(await f.page.locator('.inbox-message').count(), 2);

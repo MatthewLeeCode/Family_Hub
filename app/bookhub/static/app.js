@@ -148,7 +148,7 @@ const SECTIONS = [
   ['assistant', 'Assistant', '#/assistant', 'M4 4h16v12H9l-5 4zM8 8h8M8 12h5'],
   ['inbox', 'Inbox', '#/inbox', 'M3 5h18v14H3zM3 5l9 7 9-7'],
   ['notes', 'Notes', '#/notes', 'M5 3h14v18H5zM9 8h6M9 12h6M9 16h4'],
-  ['movies', 'Movies and TV Shows', '#/movies', 'M3 5h18v14H3zM7 5v14M17 5v14M3 9h4M3 15h4M17 9h4M17 15h4'],
+  ['movies', 'Media', '#/movies', 'M3 5h18v14H3zM7 5v14M17 5v14M3 9h4M3 15h4M17 9h4M17 15h4'],
   ['books', 'Books', '#/library', 'M4 4h7a2 2 0 0 1 1 1 2 2 0 0 1 1-1h7v15h-7a2 2 0 0 0-1 1 2 2 0 0 0-1-1H4zM12 5v15'],
   ['downloads', 'Downloads', '#/downloads', 'M12 4v11M7 10l5 5 5-5M5 20h14'],
   ['photos', 'Photos', '#/photos', 'M3 5h18v14H3zM3 16l5-5 4 4 3-3 6 6M16 7.5a1.5 1.5 0 1 0 0 3 1.5 1.5 0 1 0 0-3'],
@@ -176,7 +176,7 @@ function sectionTabs(section) {
   if (section === 'movies') return mediaTabs();
   return [];
 }
-const SECTION_LOGO = { home: 'Home', assistant: 'Assistant', inbox: 'Inbox', notes: 'Notes', movies: 'Movies and TV', downloads: 'Downloads', books: 'Books', photos: 'Photos', files: 'Files', appearance: 'Your appearance', admin: 'Admin', profiles: 'Family Hub' };
+const SECTION_LOGO = { home: 'Home', assistant: 'Assistant', inbox: 'Inbox', notes: 'Notes', movies: 'Media', downloads: 'Downloads', books: 'Books', photos: 'Photos', files: 'Files', appearance: 'Your appearance', admin: 'Admin', profiles: 'Family Hub' };
 
 // Put the household's chosen colour scheme and accent in place, if the page is not showing them already.
 function applyLook(look) {
@@ -739,7 +739,7 @@ async function pageDownloads() {
   drawChips();
   setMain(
     el('div', { class: 'col', style: 'gap:8px' }, el('h1', { class: 'glow', text: 'Downloads' }),
-      el('p', { class: 'dim' }, 'Everything being downloaded for the hub. Ask for films and TV in ', el('a', { href: '#/movies/search', text: 'Movies and TV, Search' }),
+      el('p', { class: 'dim' }, 'Everything being downloaded for the hub. Ask for films and TV in ', el('a', { href: '#/movies/search', text: 'Media, Search' }),
         ' and for books in ', el('a', { href: '#/discover', text: 'Books, Discover' }), '.')),
     speedPanel(),
     isAdmin() ? sortPanel() : null,
@@ -1079,7 +1079,7 @@ function setPiece(look) {
 
 async function pageHome() {
   const home = await api('GET', '/api/home');
-  const latestMedia = el('section', { class: 'panel cut' }, head('Latest movies and shows', el('a', { class: 'btn sm', href: '#/movies', text: 'Open movies and TV' })),
+  const latestMedia = el('section', { class: 'panel cut' }, head('Latest movies and shows', el('a', { class: 'btn sm', href: '#/movies', text: 'Open media' })),
     el('p', { class: 'small dim', role: 'status', text: S.media.jellyfin ? 'Asking Jellyfin…' : 'Films and series arrive here once Jellyfin is connected' + (isAdmin() ? ' under Admin.' : ' by an admin.') }));
   if (S.media.jellyfin && !isGuest()) {
     api('GET', '/api/media/latest').then((d) => latestMedia.replaceChildren(latestMedia.firstChild,
@@ -1104,7 +1104,7 @@ async function pageHome() {
 // A section that is not built yet. Says so plainly, with no made-up content.
 function pageSoon() {
   const page = location.hash.replace(/^#\/?/, '').split('/')[0];
-  const what = { movies: ['Movies and TV', 'Films and series on the family server, and requests for new ones.'],
+  const what = { movies: ['Media', 'Films and series on the family server, and requests for new ones.'],
     photos: ['Photos', 'The family photo albums, once the home server has a photo service.'],
     files: ['Files', 'Shared folders on the home server.'] }[page] || ['Coming soon', ''];
   setMain(el('div', { class: 'col', style: 'gap:8px' }, el('h1', { class: 'glow', text: what[0] }), el('p', { class: 'dim', text: what[1] })),
