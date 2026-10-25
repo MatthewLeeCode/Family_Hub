@@ -17,20 +17,29 @@ profile keeps its own reading history, ratings and personal tags.
 | Change someone else's My books, devices and reading status | Yes | No | No | No |
 | Remove a film, show or book from the server | Yes | No | No | No |
 | Choose the look of the whole hub | Yes | No | No | No |
+| Choose their own colours and layout | Yes | Yes | Yes | No |
 | Hide or rename book file and community tags | Yes | No | No | No |
 | See and manage copies of the same book | Yes | No | No | No |
 | Change a book's cover | Yes | If allowed to edit family tags | If allowed to edit family tags | No |
 | Link their own Goodreads profile | Yes | Yes | Yes | No |
 | See books the family has only on Kindle | Yes | Yes | Yes | No |
 | See whose Kindle books those are | Yes | No | No | No |
-| Open another profile, reset passcodes | Yes | No | No | No |
+| Open another passcode profile, reset passcodes | Yes | No | No | No |
 
 ## Who's here?
 
-The whole hub (books, films and TV) has one front door, **Who's here?**:
-press your profile and type its passcode. A profile is a person, not a
-device: sign in to the same profile on your phone, tablet and laptop. The
-hub's look is the same for everyone and only an admin changes it.
+The whole hub has one front door, **Who's here?**. Press your profile and
+enter its passcode, or its account password if it has been explicitly
+enrolled for [single sign-in](assistant-authentication.md). An enrolled
+profile signs into Family Hub and Assistant together. Its old PIN and
+administrator override are not fallback credentials.
+
+A profile is a person, not a device: use the same profile on your phone,
+tablet and laptop. Admins choose the household appearance defaults. Each
+signed-in person can inherit those choices or save personal overrides under
+**Your appearance**. The original Family layout remains available alongside
+Quiet and Compact, with the same features and permissions in every layout.
+See [personal appearance](personal-looks.md).
 
 "Restricted" is a member with **Can find new books** switched off. It is the
 right choice for someone who should just read, such as Nan.
@@ -74,14 +83,19 @@ to ask an admin; it has no search or download buttons.
 
 ## Passcodes and admin override
 
-- A passcode is asked for each time a profile is opened.
+- Profiles that have not been enrolled for account sign-in use their Family passcode, if one is set.
 - Five wrong tries lock that profile for one minute.
-- **Forgotten passcode:** on the passcode box choose **Admin override**, pick
+- **Forgotten passcode, for passcode profiles only:** on the passcode box choose **Admin override**, pick
   an admin and enter the admin's own passcode. The profile opens and the top
   sidebar shows "Opened by an admin". To set a new passcode use **Admin → Hub → Profiles → Reset passcode**.
 - A passcode keeps family members out of each other's profiles. It is not
   strong security, so do not put Family Hub on the open internet relying on it
   alone (see guide 4 for remote access).
+
+Enrolled profiles use the account password instead. Resetting their Family
+passcode does not reset that password and makes their existing identity
+binding stale. Guest and administrator-override sessions cannot use the
+assistant. See the [enrollment and recovery limits](assistant-authentication.md).
 
 ## Guest
 

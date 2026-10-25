@@ -2,7 +2,9 @@
 
 Family Hub owns the Rust Notes module in `domain/`. `family-domaind` is the only process that opens the authoritative Notes SQLite store. The Flask bridge and native `family-domain-mcp` adapter call its fixed loopback HTTP interface. Neither the core nor the browser opens that database.
 
-Humans can list, read, create, edit and delete plain-text notes. Updates and deletion require the current revision. Creates, updates and deletion use durable request IDs: the same profile, request ID and exact payload return the original receipt after restart; reuse with changed arguments fails. A receipt and its note change commit in one SQLite transaction. Notes have stable IDs, revisions, authorship, timestamps and provenance. The first MCP adapter exposes only `notes_list` and `notes_read`.
+Humans can list, read, create, edit and delete plain-text notes. Updates and deletion require the current revision. Creates, updates and deletion use durable request IDs: the same profile, request ID and exact payload return the original receipt after restart; reuse with changed arguments fails. A receipt and its note change commit in one SQLite transaction. Notes have stable IDs, revisions, authorship, timestamps and provenance.
+
+The original `family-domain-mcp` adapter exposes only `notes_list` and `notes_read`. The optional, separately enrolled `family-notes-writer` exposes only `notes_create`. It uses a distinct credential and immutable operation receipts; existing reader bindings gain no write access. See [Agent-created Notes](../domain/AGENT-NOTES.md).
 
 ## Development trust model
 
@@ -10,11 +12,11 @@ This is a trusted, same-account Windows/Linux development profile. It does not c
 
 The existing Family Hub profile database remains the profile authority. The Rust daemon opens it read-only and checks each binding's profile ID and credential/role stamp against its current row. A changed passcode or role, deleted profile, expired/revoked binding or removed scope membership denies later access. The daemon does not accept a password or create a second profile login system. Replacing/restoring the profile database requires stopping the daemon and reviewing bindings before restart.
 
-The daemon stores only hashes of random connection tokens. Each UI credential identifies one Family profile and can edit only scopes where that profile is currently an editor. A separate MCP credential is read-only and bound to one Family profile, one core subject and one scope. The adapter's reviewed native arguments name its expected binding, subject and scope; changing a credential file cannot silently change that scope. The service checks the binding again on every request. Tool arguments contain only a query, cursor or note ID. They cannot set identity, workspace, credentials, a filesystem path or an endpoint.
+The daemon stores only hashes of random connection tokens. Each UI credential identifies one Family profile and can edit only scopes where that profile is currently an editor. Each MCP credential is bound to one Family profile, one core subject and one scope, with a read-only or create-only access mode. The adapter's reviewed native arguments name its expected binding, subject and scope; changing a credential file cannot silently change that scope. The service checks the binding again on every request. Reader arguments contain only a query, cursor or note ID; writer arguments contain only a title and body. Neither can set identity, workspace, credentials, a filesystem path or an endpoint.
 
 Tokens are trusted local service data, never model context. The Flask bridge reads its profile credential from a private operator-selected directory, rejects guest and administrator-override sessions, and requires the view-context header described in `assistant-authentication.md`. It forwards only explicit Notes routes. The native adapter reads `family-domain.credential` from the core's per-connection working directory. Neither uses environment proxies or follows redirects. Errors and results are bounded and a direct credential echo is rejected. No token is placed in process arguments, browser storage, generated MCP configuration or ordinary output.
 
-HTTP request bodies are limited to 128 KiB and domain responses to 256 KiB, allowing valid UTF-8 and escaped note text without truncation. MCP carries the full result once in `structuredContent` with a short fixed text explanation; it does not duplicate the entire note/list in the text block. MCP clients must consume `structuredContent`; the text fallback contains no note data. The worst accepted escaped single note and 50-note list are tested against the core's 256 KiB serialized tool-result limit.
+HTTP request bodies are limited to 128 KiB and domain responses to 256 KiB, allowing valid UTF-8 and escaped note text without truncation. MCP returns identical complete JSON in `structuredContent` and a text block, so clients can consume either representation. The combined serialized tool response remains below 256 KiB. List pages may contain fewer than 50 notes to fit this bound; individual note contents are not shortened. Worst-case escaping and pagination are tested.
 
 The mutable credential file is independent operator state, outside the MCP executable hash. Rotation must preserve the immutable binding identity; moving authority to a new subject or scope requires a new binding/connection ID and core review. Current provisioning is deliberately limited to synthetic demo profiles and seven-day credentials. Automated rotation, production enrollment and account recovery are not implemented.
 
@@ -30,15 +32,25 @@ The activation switches are operator controls, not cryptographic proof that anot
 
 ## Build and synthetic setup
 
-Run from the Family Hub checkout:
+Run from the Family Hub checkout. Use a verification target that is not referenced by a running or reviewed connection:
 
 ```powershell
-cargo build --manifest-path domain/Cargo.toml --bins --offline
-cargo test --manifest-path domain/Cargo.toml --offline
-cargo clippy --manifest-path domain/Cargo.toml --all-targets --offline -- -D warnings
+cargo build --manifest-path domain/Cargo.toml --target-dir domain/target/notes-verification --locked --bins
+cargo test --manifest-path domain/Cargo.toml --target-dir domain/target/notes-verification --locked
+cargo clippy --manifest-path domain/Cargo.toml --target-dir domain/target/notes-verification --locked --all-targets -- -D warnings
 ```
 
-Create an operator mapping JSON file using the actual numeric IDs in the synthetic Family Hub profile database. Do not match by display name or accept mappings from an agent. Example only:
+Add `--offline` only when dependencies are already cached. Build outputs are in `domain/target/notes-verification/debug` with an `.exe` suffix on Windows. Copy validated binaries into a separate immutable runtime directory before enrollment; do not build over an existing reviewed reader executable. The commands below use `family-domaind` as shorthand for that selected daemon executable.
+
+Fresh `init-demo` stores use schema 2. Before starting the current daemon on an existing schema-1 store, stop Notes and services that can change Family profile authority, back up the stores, then run the explicit migration:
+
+```text
+family-domaind migrate-agent-notes --database <existing-notes.sqlite> --services-stopped
+```
+
+Normal startup never migrates a store. The migration preserves existing notes, reader bindings and token hashes; it does not enroll writers. See [offline setup](../domain/AGENT-NOTES.md#explicit-offline-setup) for schema checks, repeat behavior and separate writer enrollment. `--services-stopped` is an operator acknowledgement, not a command that stops services.
+
+For a fresh store, create an operator mapping JSON file using the actual numeric IDs in the synthetic Family Hub profile database. Do not match by display name or accept mappings from an agent. Example only:
 
 ```json
 {
@@ -63,7 +75,7 @@ Invoke `family-domaind init-demo` with `--database`, `--profiles-db`, `--mapping
 
 The generated MCP arguments are only `--port=4291`, `--binding=<id>`, `--subject=<core-user>` and `--space=<core-space>`. They fit the current native-only executable profile. The binary never depends on its executable directory, `HOME`, `PATH`, environment credentials or a copied database. Current-directory credential access continues to work when the core executes a reviewed artifact snapshot.
 
-Start the daemon with `family-domaind serve --database <notes.sqlite> --profiles-db <bookhub.db> --port 4291`; add `--active` only after the activation checks. Configure Flask with:
+After fresh initialization or the explicit schema-2 migration, start the daemon with `family-domaind serve --database <notes.sqlite> --profiles-db <bookhub.db> --port 4291`; add `--active` only after the activation checks. Configure Flask with:
 
 ```text
 FAMILY_NOTES_PORT=4291

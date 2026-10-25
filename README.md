@@ -22,11 +22,11 @@ own small database and backed up to a plain file every day.
 | Area | What you get |
 |---|---|
 | Tidying | Books without real details: reads files for an ISBN, finds the real title and author in Open Library and Google Books. Films and TV to sort: recognises videos already on the disk, files them, deletes spare copies |
-| Look | The Minimalist Family Hub design in four colour schemes (Dark, Light, Paper, Blueprint), an accent colour, the Scope on Home and a screen-change scan. An admin picks them for the whole household |
+| Look | The original Family design remains available in four colour schemes (Dark, Light, Paper, Blueprint). Admins choose household defaults; each signed-in profile can inherit them or choose its own colours and Family, Quiet or Compact layout. Every layout has the same features and permissions |
 | Films and TV | Browse what is on the server, request films and shows (whole series, latest season or chosen seasons), see downloads with who asked, admins can pick a release by hand or remove a title. One button connects Radarr, Sonarr, Prowlarr, qBittorrent, Bazarr and Jellyfin. Guide 14 |
 | VPN | qBittorrent has no internet except through the VPN (gluetun, ProtonVPN by default), so nothing downloads over your own connection |
 | Subtitles | Bazarr fetches English subtitles, forced ones too |
-| Profiles | Admin, member and restricted profiles; passcodes; admin override; a guest mode that browses and downloads without tracking |
+| Profiles | Admin, member and restricted profiles; passcode login or explicitly enrolled account sign-in; admin override for passcode profiles; a guest mode that browses and downloads without tracking |
 | Library | Search, filters, covers, synopsis, download; books read elsewhere (such as Kindle) listed alongside |
 | Copies | A book that is in the library twice is shown once. Spare copies can be removed for good from the Admin page, with every non-identical spare set aside first. Until then, nothing is removed |
 | Covers | Give a book a different cover: upload a picture, pick one from Open Library, or have a plain one made from the title. Kept in Family Hub; the library is not changed |

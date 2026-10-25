@@ -43,7 +43,7 @@ Browser checks were run against a disposable local fixture implementing the agre
 
 Inactive status was checked separately: it renders no editor or alternate Notes store. JavaScript syntax checks and the scoped diff whitespace check passed. The disposable fixture and browser tabs were stopped after validation.
 
-The combined Family Hub Python suite passed **167 tests**, including the **12 Notes bridge tests** and **30 appearance regression tests**. The Rust Notes domain suite passed **11 tests**. These checks cover their respective authorization, persistence and mutation contracts; the bridge and appearance counts are subsets of the 167, not additional tests.
+At the original Notes UI integration milestone, the combined Family Hub Python suite passed **167 tests**, including the **12 Notes bridge tests** and **30 appearance regression tests**. The Rust Notes domain suite then passed **11 tests**. These are historical milestone counts, not current repository totals. The bridge and appearance counts are subsets of the 167, not additional tests; each suite covers its respective authorization, persistence and mutation contracts.
 
 On 2026-10-25, Notes was also activated and verified against the actual local services using synthetic demo data. The existing `Demo: Ubuntu setup` note moved through an offline immutable export, core retirement and domain import with its ID, revision, text and recorded timestamp preserved. The core retirement and domain activation gates are active. The Family Hub UI on port 4290 displayed the imported note in its editor without changing its contents. Requests to write Notes through the retired core path were rejected; existing event and task functionality remained available.
 

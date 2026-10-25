@@ -53,7 +53,7 @@ View handlers check captured identity, context, workspace, scope epoch, question
 
 ## Validation
 
-The full Family suite passed **255 Python tests** and **101 isolated browser tests**. Focused validation passed **24 Python tests** across the question and responsibility bridge modules, and **17 browser tests** for this slice. Coverage includes explicit answer/decline, no default choice, main/quick/Background parity, shared owner isolation, stale scope/context, malformed responses, expiry, paused replies, duplicate suppression, lost-response reconciliation and unchanged-body retry. A delayed GET regression prevents a newer confirmed answer from reverting to pending.
+At the durable-question milestone, the full Family suite passed **255 Python tests** and **101 isolated browser tests**. Focused validation passed **24 Python tests** across the question and responsibility bridge modules, and **17 browser tests** for this slice. These are historical milestone counts, not current repository totals. Coverage includes explicit answer/decline, no default choice, main/quick/Background parity, shared owner isolation, stale scope/context, malformed responses, expiry, paused replies, duplicate suppression, lost-response reconciliation and unchanged-body retry. A delayed GET regression prevents a newer confirmed answer from reverting to pending.
 
 The browser fixtures intercept every API request and use synthetic data. Question cards were inspected at 1265 × 712 and 390 × 844 in Dark, Light, Paper and Blueprint, with no horizontal overflow and the action buttons/composer visible. An independent source review found no blocking issue in the projection, identity checks or reply recovery.
 
