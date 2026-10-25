@@ -62,7 +62,7 @@ async function fixture(t, { profile = {}, status = {}, data = snapshot(), hash =
     data,
     next: null,
     status: { configured: true, signed_in: true, user: data.user, ...status },
-    previews: {}, runs: new Map(), mailHandler: null, chatHandler: null, backgroundHandler: null, revocation: 'not_connected', logoutWait: null,
+    previews: {}, runs: new Map(), mailHandler: null, chatHandler: null, backgroundHandler: null, reviewHandler: null, revocation: 'not_connected', logoutWait: null,
     requests,
     async holdNextSnapshot() {
       let start, finish;
@@ -104,6 +104,13 @@ async function fixture(t, { profile = {}, status = {}, data = snapshot(), hash =
     }
     if (url.pathname === '/api/logout' && req.method() === 'POST') return json({ ok: true, core_revocation: control.revocation });
     if (url.pathname === '/api/assistant/login' && req.method() === 'POST') return json({ error: 'Sign-in failed', context: 'b'.repeat(64), core_revocation: control.revocation }, 401);
+    const resumeReview = url.pathname.match(/^\/api\/assistant\/responsibilities\/([^/]+)\/resume-review$/);
+    if (resumeReview && req.method() === 'GET') {
+      if (control.reviewHandler && await control.reviewHandler({ route, req, url, json })) return;
+      const row = control.data.responsibilities.find((item) => item.id === resumeReview[1] && item.space_id === url.searchParams.get('space_id'));
+      if (!row) return json({ error: 'Follow-up unavailable', code: 'not_found' }, 404);
+      return json(reviewOf(row));
+    }
     if (/^\/api\/assistant\/(responsibilities|approvals)\/[^/]+$/.test(url.pathname) && req.method() === 'POST') {
       if (control.backgroundHandler && await control.backgroundHandler({ route, req, url, json })) return;
       return json({ ok: true });
@@ -601,11 +608,13 @@ function backgroundSnapshot() {
   const followup = (title, space, status) => ({ id: title.toLowerCase().replaceAll(' ', '-'), space_id: space, owner_id: 'user-matt', title,
     instruction: 'Check synthetic inbox', reason: 'A bounded demo follow-up', stop_condition: 'After one check',
     status, next_check_at: Date.now() + 60000, expires_at: Date.now() + 3600000, remaining_checks: 1,
-    revision: 1, event_kind: '', event_resource: '' });
+    revision: 1, event_kind: '', event_resource: '', dependency_state: 'legacy_unbound', availability: 'not_evaluated',
+    block_reason: 'legacy_unbound', dependencies: [], next_probe_at: null, current_job: null,
+    can_pause: status === 'active', can_cancel: true, can_review_resume: status === 'paused' });
   data.responsibilities = [followup('Private active follow-up', 'private', 'active'),
     followup('Private paused follow-up', 'private', 'paused'), followup('Shared follow-up', 'shared', 'active')];
   data.approvals = [{ id: 'approval-private', space_id: 'private', status: 'pending', capability: 'Private approval',
-    arguments: '{"resource":"PRIVATE ARGUMENT"}', expires_at: Date.now() + 3600000 }];
+    arguments: '{"resource":"PRIVATE ARGUMENT"}', action_digest: 'a'.repeat(64), dependency_blocked: false, expires_at: Date.now() + 3600000 }];
   data.conversations = [{ id: 'private-chat', space_id: 'private', title: 'Private chat', updated_at: 1 },
     { id: 'shared-chat', space_id: 'shared', title: 'Shared chat', updated_at: 1 }];
   data.jobs = []; data.preferences = []; data.notices = [];
@@ -756,3 +765,303 @@ for (const tab of ['memory', 'activity']) {
     assert.doesNotMatch(await f.mainText(), /PRIVATE PREFERENCE TEXT|PRIVATE ACTIVITY TEXT|Private notice/);
   });
 }
+
+function boundSnapshot() {
+  const data = backgroundSnapshot();
+  const row = data.responsibilities[1];
+  Object.assign(row, { id: 'bound-followup', title: 'Bound inbox follow-up', dependency_state: 'bound', availability: 'blocked',
+    block_reason: 'grant_changed', dependencies: [{ capability: 'mail.search', connection_id: null, availability: 'blocked', reason_code: 'grant_changed' }] });
+  data.responsibilities = [row, data.responsibilities[2]];
+  return data;
+}
+
+function reviewOf(row, changes = {}) {
+  return { id: row.id, space_id: row.space_id, owner_id: row.owner_id, revision: row.revision, review_digest: 'd'.repeat(64),
+    can_resume: true, block_reason: null, remaining_checks: row.remaining_checks, expires_at: row.expires_at, current_job: clone(row.current_job),
+    dependencies: row.dependencies.map((dependency) => ({ ...dependency, availability: 'ready', reason_code: null,
+      permission_mode: 'current_task', changes: ['grant_changed'] })), ...changes };
+}
+const followupPosts = (f) => f.requests.filter((row) => row.method === 'POST' && row.path.includes('/responsibilities/'));
+const reviewGets = (f) => f.requests.filter((row) => row.path.endsWith('/resume-review'));
+
+test('dependency review precedes exact owner Resume and retains the last charged job with zero checks', async (t) => {
+  const data = boundSnapshot(), row = data.responsibilities[0]; row.remaining_checks = 0;
+  row.current_job = { id: 'already-charged-job', status: 'waiting_dependency', block_reason: 'grant_changed' };
+  const f = await fixture(t, { data, assistant: true, hash: '#/assistant/background' });
+  await f.page.getByRole('button', { name: 'Review dependencies', exact: true }).waitFor();
+  assert.equal(await f.page.getByRole('button', { name: 'Resume follow-up', exact: true }).count(), 0);
+  assert.match(await f.mainText(), /0 checks left|already-charged check/);
+  await f.page.getByRole('button', { name: 'Review dependencies', exact: true }).click();
+  await f.page.getByRole('button', { name: 'Resume follow-up', exact: true }).waitFor();
+  assert.match(await f.mainText(), /Verified current request|separate approval|continue where it stopped/);
+  assert.equal(followupPosts(f).length, 0); assert.equal(reviewGets(f).length, 1);
+  assert.equal(await f.page.evaluate(() => sessionStorage.length), 0);
+  f.control.backgroundHandler = async ({ req, json }) => {
+    assert.deepEqual(req.postDataJSON(), { status: 'active', revision: 1, dependency_review_digest: 'd'.repeat(64) });
+    Object.assign(row, { status: 'active', revision: 2, availability: 'ready', block_reason: null, can_pause: true, can_review_resume: false,
+      dependencies: [{ capability: 'mail.search', connection_id: null, availability: 'ready', reason_code: null }],
+      current_job: { id: 'already-charged-job', status: 'queued', block_reason: null } });
+    await json({ ok: true }); return true;
+  };
+  await f.page.getByRole('button', { name: 'Resume follow-up', exact: true }).click();
+  await f.page.getByText('Follow-up updated.', { exact: true }).waitFor();
+  assert.equal(followupPosts(f).length, 1); assert.equal(reviewGets(f).length, 1);
+  assert.equal(row.current_job.id, 'already-charged-job'); assert.equal(row.remaining_checks, 0);
+  assert.equal(await f.page.getByRole('button', { name: 'Pause', exact: true }).count(), 1);
+});
+
+test('legacy dependency labeling retains direct Resume without a review digest', async (t) => {
+  const f = await fixture(t, { data: backgroundSnapshot(), assistant: true, hash: '#/assistant/background' });
+  await f.page.getByRole('button', { name: 'Resume', exact: true }).waitFor();
+  assert.match(await f.mainText(), /Dependencies not recorded/);
+  await f.page.getByRole('button', { name: 'Resume', exact: true }).click();
+  await f.page.getByText('Follow-up updated.', { exact: true }).waitFor();
+  assert.equal(reviewGets(f).length, 0);
+  assert.deepEqual(followupPosts(f)[0].body, { status: 'active', revision: 1 });
+});
+
+test('dependency waiting keeps original due time and permission requests separate', async (t) => {
+  const data = boundSnapshot(), row = data.responsibilities[0];
+  Object.assign(row, { status: 'active', availability: 'waiting', block_reason: 'connector_offline', can_pause: true, can_review_resume: false,
+    next_probe_at: Date.now() + 30000, dependencies: [{ capability: 'mail.search', connection_id: 'mail-connector', availability: 'waiting', reason_code: 'connector_offline' }] });
+  const f = await fixture(t, { data, assistant: true, hash: '#/assistant/background' });
+  await f.page.getByText('Waiting for connection', { exact: true }).waitFor();
+  await f.page.locator('[data-followup-id="bound-followup"] summary').click();
+  assert.match(await f.mainText(), /Originally due:|Scheduler recheck:|does not reconnect|preserves its budget and pending events/);
+  assert.equal(await f.page.getByRole('button', { name: 'Allow once', exact: true }).count(), 1);
+  assert.equal(await f.page.getByRole('button', { name: 'Review dependencies', exact: true }).count(), 0);
+});
+
+test('an ineligible dependency review explains the blocker without enabling Resume or blocking approvals', async (t) => {
+  const data = boundSnapshot(), row = data.responsibilities[0];
+  const f = await fixture(t, { data, assistant: true, hash: '#/assistant/background' });
+  await f.page.getByRole('button', { name: 'Review dependencies', exact: true }).waitFor();
+  f.control.reviewHandler = async ({ json }) => {
+    await json(reviewOf(row, { can_resume: false, review_digest: null, block_reason: 'grant_denied',
+      dependencies: [{ capability: 'mail.search', connection_id: null, availability: 'blocked', reason_code: 'grant_denied', permission_mode: 'unavailable', changes: [] }] })); return true;
+  };
+  await f.page.getByRole('button', { name: 'Review dependencies', exact: true }).click();
+  await f.page.getByRole('region', { name: 'Dependency review for Bound inbox follow-up' }).getByText('A required tool is blocked by your permissions.', { exact: true }).first().waitFor();
+  assert.equal(await f.page.getByRole('button', { name: 'Resume follow-up', exact: true }).count(), 0);
+  assert.equal(await f.page.getByRole('button', { name: 'Allow once', exact: true }).isEnabled(), true);
+  assert.equal(followupPosts(f).length, 0);
+});
+
+test('a stale dependency review response is ignored after a workspace change', async (t) => {
+  const data = boundSnapshot(), row = data.responsibilities[0];
+  const f = await fixture(t, { data, assistant: true, hash: '#/assistant/background' });
+  await f.page.getByRole('button', { name: 'Review dependencies', exact: true }).waitFor();
+  let start, release;
+  const started = new Promise((resolve) => { start = resolve; }), wait = new Promise((resolve) => { release = resolve; });
+  f.control.reviewHandler = async ({ json, url }) => { assert.equal(url.searchParams.get('space_id'), 'private'); start(); await wait; await json(reviewOf(row)); return true; };
+  await f.page.getByRole('button', { name: 'Review dependencies', exact: true }).click(); await started;
+  await f.page.getByLabel('Assistant workspace', { exact: true }).selectOption('shared');
+  await f.page.getByRole('heading', { name: 'Shared follow-up', exact: true }).waitFor();
+  const response = f.page.waitForResponse((reply) => reply.url().includes('/resume-review'));
+  release(); await (await response).finished(); await f.page.evaluate(() => new Promise(requestAnimationFrame));
+  assert.doesNotMatch(await f.mainText(), /Current dependencies|Bound inbox follow-up|Verified current request/);
+  assert.equal(await f.page.getByRole('button', { name: 'Resume follow-up', exact: true }).count(), 0);
+  assert.equal(followupPosts(f).length, 0);
+});
+
+test('dependency review invalidates on a new revision without silently fetching or accepting another review', async (t) => {
+  const data = boundSnapshot(), row = data.responsibilities[0];
+  const f = await fixture(t, { data, assistant: true, hash: '#/assistant/background' });
+  await f.page.getByRole('button', { name: 'Review dependencies', exact: true }).click();
+  await f.page.getByRole('button', { name: 'Resume follow-up', exact: true }).waitFor();
+  await f.page.evaluate(() => { window.oldResume = [...document.querySelectorAll('button')].find((button) => button.textContent === 'Resume follow-up'); });
+  row.revision++;
+  await f.page.getByText('This follow-up changed. Review its current dependencies again.', { exact: true }).waitFor();
+  await f.page.evaluate(() => window.oldResume.click());
+  assert.equal(await f.page.getByRole('button', { name: 'Resume follow-up', exact: true }).count(), 0);
+  assert.equal(reviewGets(f).length, 1); assert.equal(followupPosts(f).length, 0);
+});
+
+test('dependency expiry invalidates the displayed digest before a click even without a new snapshot', async (t) => {
+  const data = boundSnapshot(), row = data.responsibilities[0];
+  const f = await fixture(t, { data, assistant: true, hash: '#/assistant/background' });
+  await f.page.getByRole('button', { name: 'Review dependencies', exact: true }).click();
+  await f.page.getByRole('button', { name: 'Resume follow-up', exact: true }).waitFor();
+  await f.page.evaluate((expired) => { Date.now = () => expired; }, row.expires_at + 1);
+  await f.page.getByRole('button', { name: 'Resume follow-up', exact: true }).click();
+  await f.page.getByText('This follow-up expired.', { exact: true }).waitFor();
+  assert.equal(followupPosts(f).length, 0); assert.equal(reviewGets(f).length, 1);
+});
+
+test('dependency Resume lost response reconciles current state and never automatically repeats the action', async (t) => {
+  const data = boundSnapshot(), row = data.responsibilities[0];
+  const f = await fixture(t, { data, assistant: true, hash: '#/assistant/background' });
+  await f.page.getByRole('button', { name: 'Review dependencies', exact: true }).click();
+  await f.page.getByRole('button', { name: 'Resume follow-up', exact: true }).waitFor();
+  f.control.backgroundHandler = async ({ route }) => {
+    Object.assign(row, { status: 'active', revision: 2, availability: 'ready', block_reason: null, can_pause: true, can_review_resume: false,
+      dependencies: [{ capability: 'mail.search', connection_id: null, availability: 'ready', reason_code: null }] });
+    await route.abort('failed'); return true;
+  };
+  await f.page.getByRole('button', { name: 'Resume follow-up', exact: true }).click();
+  await f.page.getByText(/The action was not confirmed. The current state is shown/).waitFor();
+  assert.equal(await f.page.getByRole('button', { name: 'Pause', exact: true }).isEnabled(), true);
+  assert.equal(await f.page.getByRole('button', { name: 'Resume follow-up', exact: true }).count(), 0);
+  assert.equal(followupPosts(f).length, 1); assert.equal(reviewGets(f).length, 1);
+});
+
+test('dependency Resume conflict requires a fresh displayed review and never accepts changed authority automatically', async (t) => {
+  const data = boundSnapshot(), row = data.responsibilities[0];
+  const f = await fixture(t, { data, assistant: true, hash: '#/assistant/background' });
+  await f.page.getByRole('button', { name: 'Review dependencies', exact: true }).click();
+  await f.page.getByRole('button', { name: 'Resume follow-up', exact: true }).waitFor();
+  f.control.backgroundHandler = async ({ json }) => { row.revision++; await json({ error: 'Dependencies changed. Review again.', code: 'dependency_review_changed' }, 409); return true; };
+  await f.page.getByRole('button', { name: 'Resume follow-up', exact: true }).click();
+  await f.page.getByText(/The action was not confirmed. The current state is shown/).waitFor();
+  assert.equal(await f.page.getByRole('button', { name: 'Resume follow-up', exact: true }).count(), 0);
+  assert.equal(reviewGets(f).length, 1); assert.equal(followupPosts(f).length, 1);
+  await f.page.getByRole('button', { name: 'Review dependencies', exact: true }).click();
+  await f.page.getByRole('button', { name: 'Resume follow-up', exact: true }).waitFor();
+  assert.equal(reviewGets(f).length, 2); assert.equal(followupPosts(f).length, 1);
+});
+
+test('dependency controls obey non-owner and unknown-state flags rather than guessing readiness', async (t) => {
+  const data = boundSnapshot(), row = data.responsibilities[0]; row.owner_id = 'user-nicky'; row.can_review_resume = false;
+  const f = await fixture(t, { data, assistant: true, hash: '#/assistant/background' });
+  await f.page.getByRole('heading', { name: 'Bound inbox follow-up', exact: true }).waitFor();
+  assert.equal(await f.page.getByRole('button', { name: 'Review dependencies', exact: true }).count(), 0);
+  assert.equal(await f.page.getByRole('button', { name: 'Cancel follow-up', exact: true }).count(), 1);
+  row.availability = 'future-state';
+  await f.page.getByRole('heading', { name: 'Background unavailable', exact: true }).waitFor();
+  assert.equal(await f.page.locator('#main [data-operation]').count(), 0);
+  assert.equal(followupPosts(f).length, 0);
+});
+
+test('dependency review remains escaped, keyboard reachable and usable across themes and a narrow viewport', async (t) => {
+  const data = boundSnapshot(); data.responsibilities[0].title = '<img src=x onerror=window.bad=true>';
+  const f = await fixture(t, { data, assistant: true, hash: '#/assistant/background' });
+  await f.page.getByRole('button', { name: 'Review dependencies', exact: true }).focus();
+  await f.page.keyboard.press('Enter');
+  await f.page.getByRole('button', { name: 'Resume follow-up', exact: true }).waitFor();
+  assert.equal(await f.page.evaluate(() => document.activeElement?.textContent), 'Resume follow-up');
+  assert.equal(await f.page.locator('#main img, #main [onerror]').count(), 0);
+  const output = path.resolve(__dirname, '../.test-runs/dependency-background'); mkdirSync(output, { recursive: true });
+  for (const theme of ['dark', 'light', 'paper', 'blueprint']) {
+    await f.page.evaluate((value) => { document.documentElement.dataset.theme = value; }, theme);
+    assert.equal(await f.page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), true);
+    await f.page.screenshot({ path: path.join(output, theme + '.png'), fullPage: true });
+  }
+  await f.page.setViewportSize({ width: 390, height: 844 });
+  await f.page.evaluate(() => { document.documentElement.dataset.theme = 'dark'; });
+  assert.equal(await f.page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), true);
+  await f.page.screenshot({ path: path.join(output, 'mobile.png'), fullPage: true });
+});
+
+test('dependency review arriving after cross-tab identity invalidation never exposes its controls', async (t) => {
+  const data = boundSnapshot(), row = data.responsibilities[0];
+  const f = await fixture(t, { data, assistant: true, hash: '#/assistant/background' });
+  await f.page.getByRole('button', { name: 'Review dependencies', exact: true }).waitFor();
+  let start, release;
+  const started = new Promise((resolve) => { start = resolve; }), wait = new Promise((resolve) => { release = resolve; });
+  f.control.reviewHandler = async ({ json }) => { start(); await wait; await json(reviewOf(row)); return true; };
+  await f.page.getByRole('button', { name: 'Review dependencies', exact: true }).click(); await started;
+  const other = await f.context.newPage(); await other.goto(ORIGIN + '/notice');
+  await other.evaluate(() => { const channel = new BroadcastChannel('family-hub-session'); channel.postMessage('changed'); channel.close(); });
+  await f.page.getByRole('heading', { name: 'Your sign-in changed' }).waitFor();
+  const response = f.page.waitForResponse((reply) => reply.url().includes('/resume-review'));
+  release(); await (await response).finished(); await f.page.evaluate(() => new Promise(requestAnimationFrame));
+  assert.doesNotMatch(await f.mainText(), /Bound inbox follow-up|Current dependencies|Verified current request/);
+  assert.equal(await f.page.getByRole('button', { name: 'Resume follow-up', exact: true }).count(), 0);
+  assert.equal(followupPosts(f).length, 0);
+});
+
+test('dependency review rejects mismatched authority without hiding the existing permission requests', async (t) => {
+  const data = boundSnapshot(), row = data.responsibilities[0];
+  const f = await fixture(t, { data, assistant: true, hash: '#/assistant/background' });
+  await f.page.getByRole('button', { name: 'Review dependencies', exact: true }).waitFor();
+  f.control.reviewHandler = async ({ json }) => { await json(reviewOf(row, { owner_id: 'another-account' })); return true; };
+  await f.page.getByRole('button', { name: 'Review dependencies', exact: true }).click();
+  await f.page.getByText('The dependency review could not be verified. Reload it before resuming.', { exact: true }).waitFor();
+  assert.equal(await f.page.getByRole('button', { name: 'Resume follow-up', exact: true }).count(), 0);
+  assert.equal(await f.page.getByRole('button', { name: 'Allow once', exact: true }).isEnabled(), true);
+  assert.equal(followupPosts(f).length, 0);
+});
+
+test('dependency-blocked approval preserves identity arguments and deadline through recovery and rejects detached clicks', async (t) => {
+  const data = backgroundSnapshot(), approval = data.approvals[0], deadline = approval.expires_at;
+  const f = await fixture(t, { data, assistant: true, hash: '#/assistant/background' });
+  await f.page.getByRole('button', { name: 'Allow once', exact: true }).waitFor();
+  const card = f.page.locator('[data-approval-id="approval-private"]');
+  const originalDeadline = await card.locator('p').filter({ hasText: /^Expires / }).innerText();
+  await f.page.evaluate(() => { window.oldApprovalButtons = [...document.querySelectorAll('.assistant-approval button')]; });
+  approval.dependency_blocked = true;
+  await f.page.getByText('Waiting for a required tool before this request can be decided. Its original expiry still applies.', { exact: true }).waitFor();
+  assert.equal(await card.locator('button').count(), 0);
+  assert.equal(await card.locator('p').filter({ hasText: /^Expires / }).innerText(), originalDeadline);
+  assert.match(await card.innerText(), /PRIVATE ARGUMENT/);
+  const output = path.resolve(__dirname, '../.test-runs/dependency-background'); mkdirSync(output, { recursive: true });
+  await card.screenshot({ path: path.join(output, 'approval-waiting.png') });
+  await f.page.evaluate(() => window.oldApprovalButtons.forEach((button) => button.click()));
+  assert.equal(f.requests.filter((request) => request.method === 'POST').length, 0);
+  approval.dependency_blocked = false;
+  await f.page.getByRole('button', { name: 'Allow once', exact: true }).waitFor();
+  assert.equal(await f.page.getByRole('button', { name: 'Deny', exact: true }).isEnabled(), true);
+  assert.equal(approval.expires_at, deadline);
+  assert.equal(await card.locator('p').filter({ hasText: /^Expires / }).innerText(), originalDeadline);
+  await f.page.evaluate(() => window.oldApprovalButtons.forEach((button) => button.click()));
+  assert.equal(f.requests.filter((request) => request.method === 'POST').length, 0);
+});
+
+test('dependency-blocked approval expiry never renews its deadline or makes Allow available after recovery', async (t) => {
+  const data = backgroundSnapshot(), approval = data.approvals[0], deadline = approval.expires_at; approval.dependency_blocked = true;
+  const f = await fixture(t, { data, assistant: true, hash: '#/assistant/background' });
+  await f.page.getByText('Waiting for a required tool before this request can be decided. Its original expiry still applies.', { exact: true }).waitFor();
+  await f.page.evaluate((expired) => { Date.now = () => expired; }, deadline + 1);
+  await f.page.getByText('This request can no longer be approved.', { exact: true }).waitFor();
+  assert.equal(await f.page.locator('.assistant-approval button').count(), 0);
+  assert.match(await f.page.locator('.assistant-approval').innerText(), /Expired |PRIVATE ARGUMENT/);
+  approval.dependency_blocked = false;
+  await f.page.getByRole('button', { name: 'Deny', exact: true }).waitFor();
+  assert.equal(await f.page.getByRole('button', { name: 'Allow once', exact: true }).count(), 0);
+  assert.equal(approval.expires_at, deadline);
+  assert.equal(f.requests.filter((request) => request.method === 'POST').length, 0);
+});
+
+test('dependency-blocked approval conflict reloads availability once without repeating the decision', async (t) => {
+  const data = backgroundSnapshot(), approval = data.approvals[0];
+  const f = await fixture(t, { data, assistant: true, hash: '#/assistant/background' });
+  await f.page.getByRole('button', { name: 'Allow once', exact: true }).waitFor();
+  f.control.backgroundHandler = async ({ json }) => { approval.dependency_blocked = true; await json({ error: 'The required tool is unavailable.' }, 409); return true; };
+  await f.page.getByRole('button', { name: 'Allow once', exact: true }).click();
+  await f.page.getByText('Waiting for a required tool before this request can be decided. Its original expiry still applies.', { exact: true }).waitFor();
+  assert.equal(await f.page.locator('.assistant-approval button').count(), 0);
+  const decisions = f.requests.filter((request) => request.method === 'POST' && request.path.includes('/approvals/'));
+  assert.equal(decisions.length, 1); assert.deepEqual(decisions[0].body, { approve: true });
+  assert.match(await f.page.locator('.assistant-approval').innerText(), /PRIVATE ARGUMENT|Expires /);
+});
+
+test('dependency-blocked approval requires an actual boolean before exposing decision controls', async (t) => {
+  const data = backgroundSnapshot(); data.approvals[0].dependency_blocked = 0;
+  const f = await fixture(t, { data, assistant: true, hash: '#/assistant/background' });
+  await f.page.getByText('This request’s availability could not be verified. Reload its current state before deciding.', { exact: true }).waitFor();
+  assert.equal(await f.page.locator('.assistant-approval button').count(), 0);
+  assert.match(await f.page.locator('.assistant-approval').innerText(), /PRIVATE ARGUMENT|Expires /);
+  assert.equal(f.requests.filter((request) => request.method === 'POST').length, 0);
+});
+
+test('dependency-blocked approval rejects a still-connected stale button while quick chat delays rendering', async (t) => {
+  const data = backgroundSnapshot();
+  const f = await fixture(t, { data, assistant: true, hash: '#/assistant/background' });
+  await f.page.getByRole('button', { name: 'Allow once', exact: true }).waitFor();
+  await f.page.getByRole('button', { name: 'Open quick chat', exact: true }).click();
+  await f.page.locator('#assistant-quick').getByRole('heading', { name: 'Private chat', exact: true }).waitFor();
+  let start, release;
+  const started = new Promise((resolve) => { start = resolve; }), wait = new Promise((resolve) => { release = resolve; });
+  f.control.chatHandler = async ({ id, json }) => {
+    if (id !== 'private-chat') return false;
+    start(); await wait; await json({ conversation: data.conversations[0], messages: [], active_job: null }); return true;
+  };
+  data.approvals[0].dependency_blocked = true;
+  await started; // The current snapshot is blocked; the previous controls are still in the DOM.
+  await f.page.getByRole('button', { name: 'Allow once', exact: true }).click();
+  await f.page.getByRole('button', { name: 'Deny', exact: true }).click();
+  assert.equal(f.requests.filter((request) => request.method === 'POST').length, 0);
+  release();
+  await f.page.getByText('Waiting for a required tool before this request can be decided. Its original expiry still applies.', { exact: true }).waitFor();
+  assert.equal(await f.page.locator('.assistant-approval button').count(), 0);
+});

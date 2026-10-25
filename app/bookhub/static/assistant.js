@@ -28,13 +28,66 @@ const AssistantUI = (() => {
     discovery_failed: 'The connection did not answer its health check.', probe_timeout: 'The health check timed out.',
     not_configured: 'This connection is not configured on the assistant server.'
   };
+  const followupLabels = { active: 'Scheduled', paused: 'Paused', completed: 'Completed', cancelled: 'Cancelled', expired: 'Expired', exhausted: 'Checks exhausted' };
+  const dependencyLabels = { ready: 'Ready', waiting: 'Waiting', blocked: 'Blocked', not_evaluated: 'Not evaluated' };
+  const dependencyReasons = {
+    legacy_unbound: 'Dependencies not recorded', connector_offline: 'A required connection is offline.',
+    connector_checking: 'A required connection is being checked.', connection_disabled: 'A required connection was disabled.',
+    connection_removed: 'A required connection is no longer configured.', connection_changed: 'A required connection’s authority changed.', operator_review_required: 'A connection needs operator review on the assistant server.',
+    catalog_changed: 'A required tool changed and needs current review.', grant_changed: 'A saved permission changed.',
+    grant_unavailable: 'A required permission is unavailable.', grant_denied: 'A required tool is blocked by your permissions.',
+    grant_manual: 'A required tool is set to manual use only.', grant_expired: 'A required permission expired.',
+    membership_changed: 'Workspace membership changed.', owner_paused: 'This follow-up was paused.',
+    unresolved_effect: 'An earlier action has an unresolved outcome. Resuming cannot clear it.',
+    responsibility_expired: 'This follow-up expired.', budget_exhausted: 'No checks remain for a new run.'
+  };
+  const dependencyModes = { autonomous: 'Automatic within saved limits', current_task: 'Verified current request', conditional: 'Conditional', confirm: 'Ask each time', manual: 'Manual only', unavailable: 'Unavailable' };
+  const dependencyChanges = { grant_changed: 'Permission changed', catalog_changed: 'Reviewed tool changed', membership_changed: 'Membership changed', connection_changed: 'Connection authority changed' };
+  const followupJobStates = ['queued', 'running', 'waiting_approval', 'waiting_dependency', 'outcome_unknown', 'cancelled', 'failed', 'succeeded'];
+  const publicId = (value) => typeof value === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(value);
+  const safeCount = (value, minimum = 0, maximum = Number.MAX_SAFE_INTEGER) => Number.isSafeInteger(value) && value >= minimum && value <= maximum;
+  const safeText = (value, maximum) => typeof value === 'string' && new TextEncoder().encode(value).length <= maximum;
+  const fixedReason = (value) => value === null || (typeof value === 'string' && Object.hasOwn(dependencyReasons, value));
+  const validAvailability = (state, reason) => typeof state === 'string' && Object.hasOwn(dependencyLabels, state) && fixedReason(reason) &&
+    (state === 'ready' ? reason === null : state === 'waiting' ? ['connector_offline', 'connector_checking'].includes(reason) : state !== 'blocked' || reason !== null);
+  const validFollowupJob = (job) => job === null || (job && publicId(job.id) && followupJobStates.includes(job.status) && fixedReason(job.block_reason));
+  function validDependencies(rows, bound, review = false) {
+    if (!Array.isArray(rows) || (bound ? rows.length < 1 || rows.length > 8 : rows.length !== 0)) return false;
+    return rows.every((row, index) => row && typeof row.capability === 'string' && /^[a-z][a-z0-9_.-]{0,127}$/.test(row.capability) &&
+      (index === 0 || rows[index - 1].capability < row.capability) && (row.connection_id === null || publicId(row.connection_id)) &&
+      validAvailability(row.availability, row.reason_code) && (!review || (Object.hasOwn(dependencyModes, row.permission_mode) &&
+        Array.isArray(row.changes) && row.changes.length <= 4 && new Set(row.changes).size === row.changes.length && row.changes.every((change) => Object.hasOwn(dependencyChanges, change)))));
+  }
+  function validFollowup(row, viewer, spaces) {
+    return row && ['id', 'space_id', 'owner_id'].every((key) => publicId(row[key])) && spaces.some((space) => space.id === row.space_id) &&
+      Object.hasOwn(followupLabels, row.status) && ['bound', 'legacy_unbound'].includes(row.dependency_state) && validAvailability(row.availability, row.block_reason) &&
+      validDependencies(row.dependencies, row.dependency_state === 'bound') && validFollowupJob(row.current_job) &&
+      [['title', 120], ['instruction', 4000], ['reason', 2000], ['stop_condition', 2000]].every(([key, size]) => safeText(row[key], size)) &&
+      ['', 'mail.arrived'].includes(row.event_kind) && (row.event_resource === '' || publicId(row.event_resource)) &&
+      safeCount(row.revision, 1) && safeCount(row.remaining_checks, 0, 20) && safeCount(row.expires_at) &&
+      [row.next_check_at, row.next_probe_at].every((at) => at === null || safeCount(at)) &&
+      ['can_pause', 'can_cancel', 'can_review_resume'].every((key) => typeof row[key] === 'boolean') &&
+      (!row.can_pause || row.status === 'active') && (!row.can_cancel || ['active', 'paused'].includes(row.status)) &&
+      (!row.can_review_resume || (row.status === 'paused' && row.owner_id === viewer));
+  }
+  function validResumeReview(value, row, viewer) {
+    return value && value.id === row.id && value.space_id === row.space_id && value.owner_id === viewer && value.revision === row.revision &&
+      safeCount(value.remaining_checks, 0, 20) && value.remaining_checks === row.remaining_checks && safeCount(value.expires_at) && value.expires_at === row.expires_at &&
+      typeof value.can_resume === 'boolean' && fixedReason(value.block_reason) && validFollowupJob(value.current_job) &&
+      validDependencies(value.dependencies, true, true) && value.dependencies.length === row.dependencies.length &&
+      value.dependencies.every((dependency, index) => dependency.capability === row.dependencies[index].capability && dependency.connection_id === row.dependencies[index].connection_id) &&
+      (value.can_resume ? typeof value.review_digest === 'string' && /^[a-f0-9]{64}$/.test(value.review_digest) && value.block_reason === null && value.dependencies.every((dependency) => dependency.availability === 'ready') :
+        value.review_digest === null && value.block_reason !== null);
+  }
+  const followupSignature = (row) => JSON.stringify([row.revision, row.status, row.dependency_state, row.availability, row.block_reason,
+    row.dependencies, row.expires_at, row.remaining_checks, row.current_job, row.can_review_resume]);
   const identityKey = () => identityEpoch + ':' + String(familyOwner) + ':' + String(coreOwner);
   const pathId = (id) => encodeURIComponent(id);
   const list = (value) => Array.isArray(value) ? value : [];
   const dateTime = (at) => at ? new Date(at).toLocaleString() : 'Not scheduled';
   const paragraph = (text, cls = 'dim') => el('p', { class: cls, text });
   const prettyArgs = (args) => { try { return JSON.stringify(JSON.parse(args), null, 2); } catch (_) { return String(args); } };
-  const running = (job) => ['queued', 'running', 'retry', 'waiting_approval'].includes(job.status);
+  const running = (job) => ['queued', 'running', 'retry', 'waiting_approval', 'waiting_dependency'].includes(job.status);
 
   function clearPrivateState() { identityEpoch++; drafts.clear(); selections.clear(); inFlight.clear(); connectionOperations.clear(); coreOwner = null; selectedScope = ''; }
   function sessionChanged() {
@@ -120,6 +173,7 @@ const AssistantUI = (() => {
       this.alive = true; this.timer = null; this.snapshot = null; this.scope = selectedScope; this.selected = ''; this.chat = null;
       this.selectionVersion = 0; this.stateVersion = 0; this.scopeVersion = 0; this.refreshing = null; this.switching = false; this.pending = new Set(); this.transcriptNodes = new Map();
       this.connectionRows = []; this.connectionsScope = null; this.connectionsSignature = ''; this.connectionsNeedsReload = false;
+      this.followupReviews = new Map(); this.followupNeedsReload = new Set(); this.approvalNeedsReload = new Set(); this.backgroundVerified = false;
       this.root = el('div', { class: 'assistant-view' });
       this.notice = el('p', { class: 'assistant-notice small', role: 'status', 'aria-live': 'polite' });
       this.body = el('div', { class: 'assistant-body', tabindex: -1 });
@@ -128,7 +182,7 @@ const AssistantUI = (() => {
       if (quickOnly) this.quickFrame = quickFrame(this.root); else setMain(this.root);
     }
     live() { return this.alive && this.root.isConnected; }
-    stop() { this.alive = false; clearTimeout(this.timer); this.quickFrame?.remove(); }
+    stop() { this.alive = false; clearTimeout(this.timer); this.followupReviews.clear(); this.quickFrame?.remove(); }
     attachQuick() {
       if (this.quickFrame || !this.snapshot || this.tab === 'chat') return;
       this.quickBody = el('div', { class: 'assistant-body', tabindex: -1 });
@@ -172,6 +226,8 @@ const AssistantUI = (() => {
     }
     sessionChanged() {
       clearTimeout(this.timer);
+      this.followupReviews.clear(); this.followupNeedsReload.clear();
+      this.approvalNeedsReload.clear();
       if (!this.quickOnly && this.quickFrame) { this.detachQuick(); quickWanted = false; }
       this.alive = false; this.snapshot = null; this.chat = null; this.composer = null; this.transcript = null;
       this.transcriptNodes.clear(); fill(this.controls); fill(this.notice);
@@ -217,6 +273,8 @@ const AssistantUI = (() => {
     loginForm() {
       if (!this.quickOnly && this.quickFrame) { this.detachQuick(); quickWanted = false; updateLauncher(); }
       clearTimeout(this.timer); this.snapshot = null; this.chat = null;
+      this.followupReviews.clear(); this.followupNeedsReload.clear();
+      this.approvalNeedsReload.clear();
       this.scopeSelect = null; this.scopeSelectors = []; this.transcript = null; this.composer = null; this.selected = '';
       this.transcriptNodes.clear(); this.backgroundSignature = ''; this.conversationSignature = '';
       const account = el('input', { type: 'text', autocomplete: 'username', required: true, maxlength: 1024 });
@@ -263,7 +321,14 @@ const AssistantUI = (() => {
       this.refreshing = (async () => {
         const snapshot = await this.request('GET', 'state');
         if (version !== this.stateVersion) return;
+        if (this.tab === 'background' && (!Array.isArray(snapshot.responsibilities) || snapshot.responsibilities.length > 100 ||
+            new Set(snapshot.responsibilities.map((row) => row?.id)).size !== snapshot.responsibilities.length ||
+            !snapshot.responsibilities.every((row) => validFollowup(row, snapshot.user?.id, list(snapshot.spaces))))) {
+          throw new Error('The follow-up state could not be verified. Reload before using its controls.');
+        }
         this.snapshot = snapshot;
+        this.followupNeedsReload.clear();
+        this.approvalNeedsReload.clear();
         const previousScope = this.scope;
         if (this.initialConversation) {
           const requested = list(snapshot.conversations).find((conversation) => conversation.id === this.initialConversation &&
@@ -283,6 +348,7 @@ const AssistantUI = (() => {
         if (!list(snapshot.spaces).some((s) => s.id === this.scope)) this.scope = snapshot.user.private_space;
         if (!list(snapshot.spaces).some((s) => s.id === this.scope)) this.scope = list(snapshot.spaces)[0]?.id || '';
         if (previousScope !== this.scope) this.clearScopedControls();
+        if (this.tab === 'background') this.backgroundVerified = true;
         selectedScope = this.scope;
         if (!this.scopeSelect) this.buildControls();
         this.scopeSelectors.forEach((select) => { select.value = this.scope; });
@@ -306,7 +372,15 @@ const AssistantUI = (() => {
         else if (this.tab === 'connections') await this.loadConnections();
         else if (this.tab !== 'chat') this.renderBackground();
       })();
-      try { await this.refreshing; } finally { this.refreshing = null; }
+      try { await this.refreshing; }
+      catch (error) {
+        if (this.live() && version === this.stateVersion && this.tab === 'background') {
+          this.followupReviews.clear(); this.backgroundSignature = ''; this.backgroundVerified = false;
+          fill(this.body, el('h2', { text: 'Background unavailable' }), paragraph('The current state could not be verified. Reload before using follow-up controls.'),
+            el('button', { class: 'btn', type: 'button', text: 'Reload background', onclick: () => this.refresh().catch((failure) => this.error(failure)) }));
+        }
+        throw error;
+      } finally { this.refreshing = null; }
     }
     conversations() { return list(this.snapshot.conversations).filter((c) => c.space_id === this.scope).sort((a, b) => b.updated_at - a.updated_at); }
     workspaceSelector(label = 'Assistant workspace') {
@@ -454,7 +528,9 @@ const AssistantUI = (() => {
       this.stopButton.hidden = !activeJob;
       this.newButton.disabled = busy;
       const status = list(this.chat?.messages).at(-1)?.status;
-      this.chatStatus.textContent = busy ? 'Sending…' : loading ? 'Loading…' : status === 'waiting_approval' ? 'Waiting for permission' : activeJob ? 'Working…' : '';
+      const jobStatus = list(this.snapshot.jobs).find((job) => job.id === activeJob)?.status;
+      this.chatStatus.textContent = busy ? 'Sending…' : loading ? 'Loading…' : status === 'waiting_approval' || jobStatus === 'waiting_approval' ? 'Waiting for permission' :
+        jobStatus === 'waiting_dependency' ? 'Waiting for dependencies' : activeJob ? 'Working…' : '';
       const space = list(this.snapshot.spaces).find((s) => s.id === this.scope);
       this.scopeHint.textContent = space ? space.name + (space.kind === 'shared' ? ' · visible to this space’s members' : ' · private to you') : '';
     }
@@ -516,7 +592,14 @@ const AssistantUI = (() => {
         await this.request('POST', path, body); this.pending.delete(operation);
         if (!current()) return;
         this.announce('Saved.'); this.backgroundSignature = ''; await this.refresh();
-      } catch (error) { if (current()) this.error(error); }
+      } catch (error) {
+        if (current() && path.startsWith('approvals/') && error.status === 409) {
+          this.approvalNeedsReload.add(decodeURIComponent(path.slice('approvals/'.length)));
+          this.backgroundSignature = ''; this.renderBackground();
+          try { await this.refresh(); } catch (refreshError) { if (current()) this.error(refreshError); }
+        }
+        if (current()) this.error(error);
+      }
       finally {
         this.pending.delete(operation);
         if (current()) {
@@ -529,15 +612,18 @@ const AssistantUI = (() => {
         }
       }
     }
-    action(label, key, path, body, cls = 'btn') {
+    action(label, key, path, body, cls = 'btn', validate = () => true) {
       const operation = key.replace(/^(allow|deny)-/, 'approval-').replace(/^(pause|cancel)-/, 'responsibility-');
       const scope = this.scope, scopeVersion = this.scopeVersion;
       const button = el('button', { class: cls, type: 'button', text: label, 'data-focus-key': key,
-        'data-operation': operation, disabled: this.pending.has(operation), onclick: () => this.act(key, path, body, button, scope, scopeVersion) });
+        'data-operation': operation, disabled: this.pending.has(operation), onclick: () => { if (validate()) this.act(key, path, body, button, scope, scopeVersion); } });
       return button;
     }
     clearScopedControls() {
       this.scopeVersion++;
+      this.followupReviews.clear(); this.followupNeedsReload.clear();
+      this.approvalNeedsReload.clear();
+      this.backgroundVerified = false;
       if (['background', 'memory', 'activity'].includes(this.tab)) {
         this.backgroundSignature = '';
         this.announce('');
@@ -782,11 +868,144 @@ const AssistantUI = (() => {
         paragraph(grant.description, 'small dim'), form);
       return card;
     }
+    currentFollowup(row, epoch) {
+      const current = list(this.snapshot?.responsibilities).find((item) => item.id === row.id && item.space_id === row.space_id);
+      return this.live() && this.backgroundVerified && !this.switching && this.scopeVersion === epoch && this.scope === row.space_id &&
+        current && followupSignature(current) === followupSignature(row) ? current : null;
+    }
+    dependencyList(rows, reviewed = false) {
+      return el('ul', { class: 'assistant-dependencies' }, rows.map((dependency) => el('li', {},
+        el('div', { class: 'row between' }, el('code', { text: dependency.capability }), el('span', { class: 'small dim', text: dependencyLabels[dependency.availability] })),
+        dependency.reason_code ? paragraph(dependencyReasons[dependency.reason_code], 'small dim') : null,
+        reviewed ? paragraph(dependencyModes[dependency.permission_mode], 'small dim') : null,
+        reviewed && dependency.changes.length ? paragraph(dependency.changes.map((change) => dependencyChanges[change]).join(' · '), 'small') : null)));
+    }
+    async loadResumeReview(row, button) {
+      const epoch = this.scopeVersion, owner = identityKey(), context = this.context;
+      const current = () => owner === identityKey() && context === familyContext && this.currentFollowup(row, epoch);
+      if (!button.isConnected || !current() || !row.can_review_resume || row.dependency_state !== 'bound' || row.expires_at <= Date.now() ||
+          this.pending.has('responsibility-' + row.id) || this.followupNeedsReload.has(row.id)) return;
+      const hadFocus = document.activeElement === button;
+      const entry = { signature: followupSignature(row), phase: 'loading', data: null, message: '' };
+      this.followupReviews.set(row.id, entry); this.backgroundSignature = ''; this.renderBackground();
+      try {
+        const review = await this.request('GET', 'responsibilities/' + pathId(row.id) + '/resume-review?space_id=' + pathId(row.space_id));
+        if (!current() || this.followupReviews.get(row.id) !== entry || entry.phase !== 'loading' || row.expires_at <= Date.now()) return;
+        if (!validResumeReview(review, row, this.snapshot.user.id)) throw new Error('The dependency review could not be verified. Reload it before resuming.');
+        entry.phase = 'ready'; entry.data = review;
+      } catch (error) {
+        if (!current() || this.followupReviews.get(row.id) !== entry || error instanceof Stale) return;
+        entry.phase = 'error'; entry.data = null; entry.message = error.message;
+      }
+      if (!current() || this.followupReviews.get(row.id) !== entry) return;
+      this.backgroundSignature = ''; this.renderBackground();
+      if (hadFocus && entry.data?.can_resume) this.body.querySelector('[data-focus-key="resume-' + row.id + '"]')?.focus({ preventScroll: true });
+    }
+    async controlFollowup(row, status, button, review = null) {
+      const epoch = this.scopeVersion, owner = identityKey(), context = this.context;
+      const current = () => this.live() && owner === identityKey() && context === familyContext && this.scopeVersion === epoch && this.scope === row.space_id;
+      const operation = 'responsibility-' + row.id;
+      if (!button.isConnected || !this.currentFollowup(row, epoch) || this.pending.has(operation) || this.followupNeedsReload.has(row.id)) return;
+      if ((status === 'paused' && !row.can_pause) || (status === 'cancelled' && !row.can_cancel) ||
+          (status === 'active' && (!row.can_review_resume || row.owner_id !== this.snapshot.user.id || row.expires_at <= Date.now()))) return;
+      const body = { status, revision: row.revision };
+      if (status === 'active' && row.dependency_state === 'bound') {
+        if (!review || this.followupReviews.get(row.id) !== review || review.phase !== 'ready' ||
+            !validResumeReview(review.data, row, this.snapshot.user.id) || !review.data.can_resume) return;
+        body.dependency_review_digest = review.data.review_digest;
+      }
+      const hadFocus = document.activeElement === button;
+      this.followupReviews.delete(row.id); this.followupNeedsReload.add(row.id);
+      this.pending.add(operation); this.stateVersion++; this.backgroundSignature = ''; this.renderBackground();
+      let failure = null;
+      try {
+        const result = await this.request('POST', 'responsibilities/' + pathId(row.id), body);
+        if (!result || Object.keys(result).length !== 1 || result.ok !== true) throw new Error('The follow-up result was not confirmed.');
+      } catch (error) { failure = error; }
+      finally { this.pending.delete(operation); }
+      if (!current()) return;
+      this.backgroundSignature = '';
+      try {
+        await this.refresh();
+        if (!current()) return;
+        this.announce(failure ? 'The action was not confirmed. The current state is shown; no action was repeated. ' + failure.message : 'Follow-up updated.');
+      } catch (error) {
+        if (current()) this.error(error);
+      }
+      if (current() && hadFocus && (!document.activeElement || document.activeElement === document.body)) {
+        (this.body.querySelector('[data-followup-id="' + row.id + '"]') || this.body).focus({ preventScroll: true });
+      }
+    }
+    followupCard(row) {
+      const epoch = this.scopeVersion;
+      const busy = this.pending.has('responsibility-' + row.id) || this.followupNeedsReload.has(row.id);
+      const expired = row.expires_at <= Date.now();
+      const entry = this.followupReviews.get(row.id);
+      const action = (label, status, key, review = null) => {
+        const button = el('button', { class: 'btn', type: 'button', text: label, 'data-focus-key': key + '-' + row.id,
+          'data-operation': 'responsibility-' + row.id, disabled: busy,
+          onclick: () => { if (this.currentFollowup(row, epoch)) this.controlFollowup(row, status, button, review); } });
+        return button;
+      };
+      const reviewButton = (label) => {
+        const button = el('button', { class: 'btn', type: 'button', text: label, 'data-focus-key': 'review-' + row.id,
+          disabled: busy || expired || entry?.phase === 'loading', onclick: () => { if (this.currentFollowup(row, epoch)) this.loadResumeReview(row, button); } });
+        return button;
+      };
+      const controls = el('div', { class: 'row assistant-followup-actions' },
+        row.can_pause ? action('Pause', 'paused', 'pause') : null,
+        row.can_review_resume && !expired ? (row.dependency_state === 'legacy_unbound' ? action('Resume', 'active', 'pause') : reviewButton('Review dependencies')) : null,
+        row.can_cancel ? action('Cancel follow-up', 'cancelled', 'cancel') : null);
+      let reviewPanel = null;
+      if (entry) {
+        reviewPanel = el('section', { class: 'assistant-followup-review', 'aria-label': 'Dependency review for ' + row.title }, el('h4', { text: 'Current dependencies' }));
+        if (entry.phase === 'loading') reviewPanel.append(paragraph('Loading the current dependency review…', 'small dim'));
+        else if (entry.data) {
+          const value = entry.data;
+          reviewPanel.append(this.dependencyList(value.dependencies, true),
+            paragraph(value.remaining_checks + ' checks left · expires ' + dateTime(value.expires_at), 'small dim'),
+            paragraph('Resuming accepts the changes shown here. It does not grant new permissions, extend the expiry or add checks. Actions set to Ask or verified current request can still require separate approval.', 'small dim'));
+          if (value.current_job?.status === 'waiting_dependency') reviewPanel.append(paragraph('This check will continue where it stopped. Resume does not spend another check.', 'small dim'));
+          if (value.can_resume && !expired) reviewPanel.append(action('Resume follow-up', 'active', 'resume', entry));
+          else reviewPanel.append(paragraph(dependencyReasons[value.block_reason] || 'This follow-up cannot resume.', 'small dim'));
+        } else {
+          reviewPanel.append(paragraph(entry.message || 'This review changed. Load a current review before resuming.', 'small dim'));
+          if (row.can_review_resume && !expired) reviewPanel.append(reviewButton('Review dependencies again'));
+        }
+      }
+      let label = followupLabels[row.status];
+      if (row.status === 'active' && row.availability === 'waiting') label = 'Waiting for connection';
+      return el('article', { class: 'panel cut assistant-followup', 'data-followup-id': row.id, tabindex: -1 },
+        el('div', { class: 'row between' }, el('h3', { text: row.title }), el('span', { class: 'small dim', text: label })),
+        row.block_reason ? paragraph(dependencyReasons[row.block_reason], 'small') : null,
+        paragraph(row.remaining_checks + ' checks left · expires ' + dateTime(row.expires_at), 'small dim'),
+        paragraph((row.availability === 'waiting' ? 'Originally due: ' : 'Next check: ') + dateTime(row.next_check_at), 'small dim'),
+        row.current_job ? paragraph(row.current_job.block_reason === 'unresolved_effect' ? dependencyReasons.unresolved_effect :
+          row.current_job.status === 'waiting_dependency' ? 'This check will continue where it stopped.' :
+          row.current_job.status === 'waiting_approval' ? 'The current check is waiting for your permission.' : 'Current check: ' + row.current_job.status.replaceAll('_', ' '), 'small dim') : null,
+        el('details', { 'data-key': row.id }, el('summary', { text: 'Scope, tools and limits' }),
+          paragraph(row.instruction, ''), paragraph('Why: ' + row.reason, 'small dim'), paragraph('Stop when: ' + row.stop_condition, 'small dim'),
+          paragraph('Event: ' + (row.event_kind || 'None') + (row.event_resource ? ' · ' + row.event_resource : ''), 'small dim'),
+          row.next_probe_at !== null ? paragraph('Scheduler recheck: ' + dateTime(row.next_probe_at) + '. This checks saved status; it does not reconnect the service.', 'small dim') : null,
+          row.current_job?.status === 'waiting_dependency' ? paragraph('This queued check has already used one budget entry. Its receipts and event input are retained.', 'small dim') :
+            row.availability === 'waiting' && !row.current_job ? paragraph('Waiting before a check is queued preserves its budget and pending events.', 'small dim') : null,
+          row.dependency_state === 'bound' ? this.dependencyList(row.dependencies) : paragraph('Dependencies not recorded. This older follow-up keeps its original scheduling behavior.', 'small dim')),
+        controls, busy ? paragraph('Checking the current result…', 'small dim') : null, reviewPanel);
+    }
     renderBackground() {
       const snapshot = this.snapshot;
+      if (this.tab === 'background' && !this.backgroundVerified) return;
       const scoped = (name) => list(snapshot[name]).filter((row) => row.space_id === this.scope);
+      for (const [id, entry] of this.followupReviews) {
+        const row = scoped('responsibilities').find((item) => item.id === id);
+        if (!row || row.dependency_state !== 'bound' || !row.can_review_resume) { this.followupReviews.delete(id); continue; }
+        if (entry.signature !== followupSignature(row) || row.expires_at <= Date.now()) {
+          entry.phase = 'stale'; entry.data = null; entry.message = row.expires_at <= Date.now() ? 'This follow-up expired.' : 'This follow-up changed. Review its current dependencies again.';
+        }
+      }
       const signature = JSON.stringify([this.tab, this.scope, snapshot.approvals, snapshot.responsibilities, snapshot.jobs, snapshot.preferences, snapshot.notices,
-        list(snapshot.approvals).map((a) => a.expires_at <= Date.now()), Array.from(this.pending)]);
+        list(snapshot.approvals).map((a) => a.expires_at <= Date.now()), scoped('responsibilities').map((row) => row.expires_at <= Date.now()),
+        Array.from(this.pending), Array.from(this.followupReviews), Array.from(this.followupNeedsReload), Array.from(this.approvalNeedsReload)]);
       if (signature === this.backgroundSignature) return;
       this.backgroundSignature = signature;
       if (this.tab === 'memory') {
@@ -811,26 +1030,26 @@ const AssistantUI = (() => {
         el('section', { class: 'assistant-records', 'aria-label': 'Permission requests' },
           el('h3', { text: 'Permission requests' }), approvals.length ? approvals.map((approval) => {
             const expired = approval.expires_at <= Date.now();
-            return el('article', { class: 'panel cut assistant-approval' }, el('h3', { text: approval.capability }),
+            const available = approval.dependency_blocked === false && !this.approvalNeedsReload.has(approval.id);
+            const canDecide = (approve) => {
+              const current = list(this.snapshot?.approvals).find((row) => row.id === approval.id && row.space_id === this.scope);
+              return this.backgroundVerified && current?.status === 'pending' && current.dependency_blocked === false &&
+                !this.approvalNeedsReload.has(approval.id) && current.expires_at === approval.expires_at && current.arguments === approval.arguments &&
+                current.action_digest === approval.action_digest && (!approve || current.expires_at > Date.now());
+            };
+            return el('article', { class: 'panel cut assistant-approval', 'data-approval-id': approval.id }, el('h3', { text: approval.capability }),
               paragraph('Allow once authorises only the exact action below. It does not change your standing permissions.', 'small dim'),
               el('pre', { class: 'assistant-arguments', tabindex: 0, 'aria-label': 'Exact action arguments', text: prettyArgs(approval.arguments) }),
               paragraph((expired ? 'Expired ' : 'Expires ') + dateTime(approval.expires_at), 'small dim'),
-              el('div', { class: 'row' }, expired ? paragraph('This request can no longer be approved.', 'small dim') :
-                this.action('Allow once', 'allow-' + approval.id, 'approvals/' + pathId(approval.id), { approve: true }, 'btn pri'),
-                this.action('Deny', 'deny-' + approval.id, 'approvals/' + pathId(approval.id), { approve: false })));
+              approval.dependency_blocked === true ? paragraph('Waiting for a required tool before this request can be decided. Its original expiry still applies.', 'small dim') :
+                !available ? paragraph('This request’s availability could not be verified. Reload its current state before deciding.', 'small dim') : null,
+              expired ? paragraph('This request can no longer be approved.', 'small dim') : null,
+              available ? el('div', { class: 'row' }, expired ? null :
+                this.action('Allow once', 'allow-' + approval.id, 'approvals/' + pathId(approval.id), { approve: true }, 'btn pri', () => canDecide(true)),
+                this.action('Deny', 'deny-' + approval.id, 'approvals/' + pathId(approval.id), { approve: false }, 'btn', () => canDecide(false))) : null);
           }) : paragraph('No permission requests waiting.', 'small dim')),
         el('section', { class: 'assistant-records', 'aria-label': 'Follow-ups' }, el('h3', { text: 'Follow-ups' }),
-          responsibilities.length ? responsibilities.map((r) => el('article', { class: 'panel cut' },
-            el('div', { class: 'row between' }, el('h3', { text: r.title }), el('span', { class: 'small dim', text: r.status })), paragraph(r.reason, ''),
-            paragraph('Next check: ' + dateTime(r.next_check_at), 'small dim'),
-            el('details', { 'data-key': r.id }, el('summary', { text: 'Scope and limits' }),
-              paragraph(r.instruction, ''), paragraph('Stop when: ' + r.stop_condition, 'small dim'),
-              paragraph(r.remaining_checks + ' checks left · expires ' + dateTime(r.expires_at), 'small dim'),
-              paragraph('Event: ' + (r.event_kind || 'None') + (r.event_resource ? ' · ' + r.event_resource : ''), 'small dim')),
-            ['active', 'paused'].includes(r.status) ? el('div', { class: 'row' },
-              r.status === 'active' || r.owner_id === snapshot.user.id ? this.action(r.status === 'active' ? 'Pause' : 'Resume', 'pause-' + r.id,
-                'responsibilities/' + pathId(r.id), { status: r.status === 'active' ? 'paused' : 'active', revision: r.revision }) : null,
-              this.action('Cancel follow-up', 'cancel-' + r.id, 'responsibilities/' + pathId(r.id), { status: 'cancelled', revision: r.revision })) : null)) :
+          responsibilities.length ? responsibilities.map((row) => this.followupCard(row)) :
             paragraph('Ask the assistant to “Watch my inbox” to try a timed and event-triggered follow-up.', 'small dim')),
         el('section', { class: 'assistant-records' }, el('h3', { text: 'Running now' }), this.jobList(scoped('jobs').filter(running))));
       this.body.tabIndex = -1;

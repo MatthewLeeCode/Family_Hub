@@ -15,6 +15,7 @@ from flask import Blueprint, current_app, jsonify, make_response, request, sessi
 from .api import fail, profile_only
 from .secure_sessions import rotate_session, view_context
 from . import assistant_mail_contract as mail_contract
+from . import assistant_responsibility_contract as responsibility_contract
 
 bp = Blueprint("assistant_bridge", __name__, url_prefix="/api/assistant")
 
@@ -45,7 +46,7 @@ def usable_profile():
     return None
 
 
-def call(method, path, data=None, login=False, project=None, error_codes=None):
+def call(method, path, data=None, login=False, project=None, error_codes=None, expected_status=None):
     token = session.get("assistant_token")
     if not login and not token:
         return fail("Sign in to your assistant account.", 401)
@@ -81,6 +82,8 @@ def call(method, path, data=None, login=False, project=None, error_codes=None):
                         429: "The assistant is busy. Try again shortly."}
             return fail(messages.get(response.status_code, "The assistant could not complete that request."),
                         response.status_code if response.status_code in messages else 502)
+        if expected_status is not None and response.status_code != expected_status:
+            return fail("The assistant returned an invalid response.", 502)
         payload = response.json()
         if not isinstance(payload, dict):
             return fail("The assistant returned an invalid response.", 502)
@@ -272,14 +275,52 @@ def mail_intent(who, item=None, identifier=None):
                 project=lambda payload: mail_contract.summary(payload, body["request_id"], item), error_codes=mail_contract.ERRORS)
 
 
+@bp.get("/state")
+@profile_only
+def assistant_state(who):
+    denied = usable_profile()
+    if denied:
+        return denied
+    if request.args:
+        return fail("Unexpected request fields.")
+    viewer = (session.get("assistant_user") or {}).get("id")
+    return call("GET", "state", project=lambda payload: responsibility_contract.snapshot(payload, viewer), expected_status=200)
+
+
+@bp.get("/responsibilities/<string:item>/resume-review")
+@bp.post("/responsibilities/<string:item>")
+@profile_only
+def responsibility_control(who, item):
+    denied = usable_profile()
+    if denied:
+        return denied
+    if not responsibility_contract.reference(item):
+        return fail("Invalid follow-up reference.")
+    if request.method == "GET":
+        if set(request.args) != {"space_id"} or len(request.args.getlist("space_id")) != 1 or not responsibility_contract.reference(request.args["space_id"]):
+            return fail("Choose a workspace.")
+        space = request.args["space_id"]
+        viewer = (session.get("assistant_user") or {}).get("id")
+        return call("GET", "responsibilities/" + item + "/resume-review?" + urlencode({"space_id": space}),
+                    project=lambda payload: responsibility_contract.review(payload, item, space, viewer),
+                    error_codes=responsibility_contract.ERRORS, expected_status=200)
+    if request.args:
+        return fail("Unexpected request fields.")
+    if request.content_length and request.content_length > 4096:
+        return fail("That request is too large.", 413)
+    body = request.get_json(silent=True)
+    if not responsibility_contract.control(body):
+        return fail("Expected a follow-up action and its current revision.")
+    return call("POST", "responsibilities/" + item, body, project=responsibility_contract.acknowledgement,
+                error_codes=responsibility_contract.ERRORS, expected_status=200)
+
+
 # Explicit path allowlist. No generic URL, arbitrary route or credential forwarding tool.
-@bp.route("/state", methods=["GET"])
 @bp.route("/conversations", methods=["POST"])
 @bp.route("/conversations/<string:item>", methods=["GET"])
 @bp.route("/conversations/<string:item>/messages", methods=["POST"])
 @bp.route("/jobs/<string:item>/stop", methods=["POST"])
 @bp.route("/approvals/<string:item>", methods=["POST"])
-@bp.route("/responsibilities/<string:item>", methods=["POST"])
 @bp.route("/policies", methods=["POST"])
 @bp.route("/grants", methods=["GET", "POST"])
 @profile_only
