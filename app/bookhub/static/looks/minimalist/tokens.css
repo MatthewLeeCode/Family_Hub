@@ -1,0 +1,107 @@
+/* Minimalist Family Hub — generated from tokens.json */
+:root, [data-theme="dark"] {
+  --bg: #0a0a0a;
+  --panel: #0f0f0f;
+  --panel2: #191919;
+  --line: #2a2a2a;
+  --line2: #6b6b6b;
+  --ink: #f2f1ec;
+  --dim: #a09f9a;
+  --accent: #a98bff;
+  --accent-ink: #0a0a0a;
+  --accent2: #f2f1ec;
+  --accent3: #6b6b6b;
+  --ok: #f2f1ec;
+  --warn: #a98bff;
+  --grid: #161616;
+  --cover-ink: #f6f3ec;
+  --paper: #e9e3d2;
+  --paper-edge: #bdb6a3;
+}
+[data-theme="light"] {
+  --bg: #ecebe7;
+  --panel: #f4f3f0;
+  --panel2: #e2e1dc;
+  --line: #cfcdc7;
+  --line2: #7a7975;
+  --ink: #111111;
+  --dim: #55544f;
+  --accent: #6236d0;
+  --accent-ink: #ffffff;
+  --accent2: #111111;
+  --accent3: #7a7975;
+  --ok: #111111;
+  --warn: #6236d0;
+  --grid: #e0dfda;
+}
+[data-theme="paper"] {
+  --bg: #f5f1e8;
+  --panel: #f9f6ef;
+  --panel2: #ebe6da;
+  --line: #d8d1c2;
+  --line2: #7a756b;
+  --ink: #0d0d0d;
+  --dim: #56524a;
+  --accent: #0d0d0d;
+  --accent-ink: #f5f1e8;
+  --accent2: #0d0d0d;
+  --accent3: #9a958a;
+  --ok: #0d0d0d;
+  --warn: #0d0d0d;
+  --grid: #e9e3d6;
+}
+[data-theme="blueprint"] {
+  --bg: #f4f2ec;
+  --panel: #f8f6f1;
+  --panel2: #e9e7e0;
+  --line: #c8cae6;
+  --line2: #6b70cc;
+  --ink: #1b22b2;
+  --dim: #4a50bf;
+  --accent: #1b22b2;
+  --accent-ink: #f4f2ec;
+  --accent2: #1b22b2;
+  --accent3: #8c90d8;
+  --ok: #1b22b2;
+  --warn: #1b22b2;
+  --grid: #dcddf0;
+}
+:root {
+  --font-display: 'Archivo','Helvetica Neue',Arial,sans-serif;
+  --font-num: 'Archivo','Helvetica Neue',Arial,sans-serif;
+  --font-body: 'Archivo','Helvetica Neue',Arial,sans-serif;
+  --font-label: 'Archivo','Arial Narrow','Helvetica Neue',sans-serif;
+  --font-mono: ui-monospace,Consolas,monospace;
+  --font-cover: Georgia,'Times New Roman',serif;
+  --space-4: 4px;
+  --space-6: 6px;
+  --space-8: 8px;
+  --space-10: 10px;
+  --space-12: 12px;
+  --space-14: 14px;
+  --space-16: 16px;
+  --space-18: 18px;
+  --space-20: 20px;
+  --space-22: 22px;
+  --space-26: 26px;
+  --space-28: 28px;
+  --space-40: 40px;
+  --space-72: 72px;
+  --radius-none: 0px;
+  --radius-sheet: 12px;
+  --radius-arch: 28px;
+  --radius-pill: 999px;
+  --radius-dot: 50%;
+  --control-md: 42px;
+  --control-sm: 34px;
+  --control-passcode: 52px;
+  --chip-md: 36px;
+  --chip-sm: 30px;
+  --chip-xs: 28px;
+  --keybox: 40px;
+  --sidebar: 224px;
+  --content: 1160px;
+  --book-min: 158px;
+  --focus-ring: 2px;
+  --focus-offset: 3px;
+}

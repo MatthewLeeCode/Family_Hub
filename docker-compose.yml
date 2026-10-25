@@ -1,0 +1,344 @@
+# Family Hub and the services it works with.
+#
+#   docker compose up -d                      Family Hub + the library manager
+#   docker compose --profile search up -d     ...plus search (Prowlarr)
+#   docker compose --profile search --profile torrent up -d
+#                                             ...plus qBittorrent, locked inside the VPN (gluetun)
+#   docker compose --profile search --profile torrent --profile media up -d
+#                                             ...plus films, TV and subtitles (Radarr, Sonarr, Bazarr)
+#   docker compose --profile watch up -d      ...plus Jellyfin, for trying things on a PC
+#   docker compose --profile series up -d     ...plus manga and manhwa by chapter (Suwayomi)
+#
+# Everything that matters is stored under STACK_DIR (default ./stack), so
+# moving to another machine means copying this folder. See docs/.
+
+services:
+  bookhub:
+    build: .
+    container_name: bookhub
+    user: "${PUID:-1000}:${PGID:-1000}"
+    environment:
+      - TZ=${TZ:-Etc/UTC}
+      - BOOKHUB_DATA_DIR=/data
+      - CALIBRE_LIBRARY=/library
+      - INGEST_DIR=/ingest
+      - DOWNLOADS_DIR=/downloads
+      - INBOX_DIR=/inbox
+      - ATTENTION_DIR=/needs-attention
+      - CWA_URL=${CWA_URL:-}
+      - CWA_INTERNAL_URL=${CWA_INTERNAL_URL:-http://calibre-web-automated:8083}
+      - CWA_USER=${CWA_USER:-}
+      - CWA_PASS=${CWA_PASS:-}
+      - PROWLARR_URL=${PROWLARR_URL:-}
+      - PROWLARR_API_KEY=${PROWLARR_API_KEY:-}
+      - QBITTORRENT_URL=${QBITTORRENT_URL:-}
+      - QBITTORRENT_USER=${QBITTORRENT_USER:-}
+      - QBITTORRENT_PASS=${QBITTORRENT_PASS:-}
+      - QBITTORRENT_CATEGORY=${QBITTORRENT_CATEGORY:-}
+      - SMTP_USER=${SMTP_USER:-}
+      - SMTP_PASS=${SMTP_PASS:-}
+      - SMTP_HOST=${SMTP_HOST:-}
+      - SMTP_PORT=${SMTP_PORT:-}
+      - SMTP_FROM=${SMTP_FROM:-}
+      - SMTP_MAX_MB=${SMTP_MAX_MB:-}
+      - TAG_LOOKUPS=${TAG_LOOKUPS:-}
+      - GOOGLE_BOOKS_KEY=${GOOGLE_BOOKS_KEY:-}
+      - COMIC_VINE_KEY=${COMIC_VINE_KEY:-}
+      - HARDCOVER_KEY=${HARDCOVER_KEY:-}
+      - SUWAYOMI_URL=${SUWAYOMI_URL:-}
+      - SUWAYOMI_USER=${SUWAYOMI_USER:-}
+      - SUWAYOMI_PASS=${SUWAYOMI_PASS:-}
+      - SERIES_LANGUAGES=${SERIES_LANGUAGES:-}
+      - KOMGA_URL=${KOMGA_URL:-}
+      - KOMGA_USER=${KOMGA_USER:-}
+      - KOMGA_PASS=${KOMGA_PASS:-}
+      # Films and TV (docs/14). Keys left empty are read from each service's own settings file.
+      - RADARR_URL=${RADARR_URL:-}
+      - RADARR_API_KEY=${RADARR_API_KEY:-}
+      - SONARR_URL=${SONARR_URL:-}
+      - SONARR_API_KEY=${SONARR_API_KEY:-}
+      - BAZARR_URL=${BAZARR_URL:-}
+      - BAZARR_API_KEY=${BAZARR_API_KEY:-}
+      - SUBTITLE_LANGUAGES=${SUBTITLE_LANGUAGES:-}
+      - OPENSUBTITLES_USER=${OPENSUBTITLES_USER:-}
+      - OPENSUBTITLES_PASS=${OPENSUBTITLES_PASS:-}
+      - JELLYFIN_URL=${JELLYFIN_URL:-}
+      - JELLYFIN_API_KEY=${JELLYFIN_API_KEY:-}
+      - JELLYFIN_LINK=${JELLYFIN_LINK:-}
+      # The published ports below, so Admin can link to each program's own page.
+      - CWA_PORT=${CWA_PORT:-8083}
+      - PROWLARR_PORT=${PROWLARR_PORT:-9696}
+      - QBITTORRENT_PORT=${QBITTORRENT_PORT:-8080}
+      - RADARR_PORT=${RADARR_PORT:-7878}
+      - SONARR_PORT=${SONARR_PORT:-8989}
+      - BAZARR_PORT=${BAZARR_PORT:-6767}
+      - JELLYFIN_PORT=${JELLYFIN_PORT:-8096}
+      - SUWAYOMI_PORT=${SUWAYOMI_PORT:-4567}
+      - KOMGA_PORT=${KOMGA_PORT:-25600}
+      - GLUETUN_URL=${GLUETUN_URL:-}
+      - GLUETUN_API_KEY=${GLUETUN_API_KEY:-}
+      - VPN_PROVIDER=${VPN_PROVIDER:-protonvpn}
+      - SERVICES_USER=${SERVICES_USER:-}
+      - SERVICES_PASSWORD=${SERVICES_PASSWORD:-}
+      - VPN_CONFIGURED=${VPN_WIREGUARD_KEY:+yes}${VPN_USER:+yes}
+      # The nightly copy (docs/06). Only switched on when BACKUP_PATH is set in .env.
+      - SECOND_DISK_DIR=${BACKUP_PATH:+/second-disk}
+      - SECOND_COPY=${SECOND_COPY:-}
+      - STACK_FOLDER=/stack
+      - SERIES_DIR=/series
+      - GUEST_ENABLED=${GUEST_ENABLED:-true}
+      - GUEST_LAN_ONLY=${GUEST_LAN_ONLY:-true}
+      - TRUST_PROXY=${TRUST_PROXY:-false}
+      # The household's .env, so settings saved on the Admin page go into that one file (settings.py).
+      - HUB_CONFIG_FILE=/hub-config/.env
+    volumes:
+      - ${STACK_DIR:-./stack}/bookhub:/data
+      # The .env file itself. It must exist before the first start (copy .env.example to .env).
+      - type: bind
+        source: ./.env
+        target: /hub-config/.env
+        bind:
+          create_host_path: false
+      # Family Hub only ever reads the library, but the folder must be writable
+      # for the database's lock files while the library manager is running.
+      - ${LIBRARY_PATH:-./stack/library}:/library
+      - ${INGEST_PATH:-./stack/ingest}:/ingest
+      # Drop new files in the inbox. Family Hub tidies them and passes books on;
+      # anything it cannot use is moved to needs-attention, never deleted.
+      - ${INBOX_PATH:-./stack/inbox}:/inbox
+      - ${ATTENTION_PATH:-./stack/needs-attention}:/needs-attention
+      - ${DOWNLOADS_PATH:-${DATA_ROOT:-./stack/data}/torrents/books}:/downloads:ro
+      - ./tagpacks:/app/tagpacks:ro
+      # Read-only views of everything the nightly copy takes, and the disk it goes to.
+      - ${STACK_DIR:-./stack}:/stack:ro
+      - ${SERIES_PATH:-./stack/series}:/series:ro
+      - ${BACKUP_PATH:-./stack/no-second-disk}:/second-disk
+      # Read-only, to show how much room the media disk has left.
+      - ${DATA_ROOT:-./stack/data}:/media-root:ro
+      # Writable inside these two only: Films and TV to sort deletes spare copies and empty folders here (docs/14).
+      - ${DATA_ROOT:-./stack/data}/torrents:/media-root/torrents
+      - ${DATA_ROOT:-./stack/data}/unsorted:/media-root/unsorted
+    ports:
+      - "${BOOKHUB_PORT:-8090}:8090"
+    restart: unless-stopped
+
+  calibre-web-automated:
+    image: crocodilestick/calibre-web-automated:v4.0.8
+    container_name: calibre-web-automated
+    environment:
+      - PUID=${PUID:-1000}
+      - PGID=${PGID:-1000}
+      - TZ=${TZ:-Etc/UTC}
+    volumes:
+      - ${STACK_DIR:-./stack}/cwa-config:/config
+      - ${INGEST_PATH:-./stack/ingest}:/cwa-book-ingest
+      - ${LIBRARY_PATH:-./stack/library}:/calibre-library
+    ports:
+      - "${CWA_PORT:-8083}:8083"
+    # The usual "is the web page up" check, plus a clean-up: if the importer
+    # crashes it leaves a lock file behind and no further books are added
+    # until a restart. A lock more than a minute old that no long-running
+    # importer owns is removed. (Importers that find the lock taken exit
+    # within a second or two, so they are not counted.)
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - |
+          L=/tmp/kindle_epub_fixer.lock
+          if [ -n "$$(find $$L -mmin +1 2>/dev/null)" ]; then
+            held=0
+            for p in $$(pgrep -f '[i]ngest_processor|[k]indle_epub_fixer'); do
+              [ "$$(ps -o etimes= -p $$p 2>/dev/null | tr -d ' ')" -ge 30 ] 2>/dev/null && held=1
+            done
+            [ $$held = 0 ] && rm -f $$L
+          fi
+          curl -fsL --connect-timeout 1 --max-time 2 http://localhost:8083/ >/dev/null || exit 1
+      interval: 30s
+      timeout: 5s
+      start_period: 120s
+      retries: 3
+    restart: unless-stopped
+
+  prowlarr:
+    image: lscr.io/linuxserver/prowlarr:2.6.5
+    container_name: prowlarr
+    profiles: ["search"]
+    environment:
+      - PUID=${PUID:-1000}
+      - PGID=${PGID:-1000}
+      - TZ=${TZ:-Etc/UTC}
+    volumes:
+      - ${STACK_DIR:-./stack}/prowlarr-config:/config
+    ports:
+      - "${PROWLARR_PORT:-9696}:9696"
+    restart: unless-stopped
+
+  # Gets Prowlarr past "checking your browser" pages on indexers that use them.
+  # In Prowlarr: Settings, Indexers, +, FlareSolverr, host http://flaresolverr:8191,
+  # with a tag; give the same tag to those indexers. Not published outside Docker.
+  flaresolverr:
+    image: ghcr.io/flaresolverr/flaresolverr:v3.5.2
+    container_name: flaresolverr
+    profiles: ["search"]
+    environment:
+      - TZ=${TZ:-Etc/UTC}
+      - LOG_LEVEL=info
+    restart: unless-stopped
+
+  # The VPN. qBittorrent has no network of its own: it uses this container's,
+  # so when the VPN is down or not set up yet, qBittorrent cannot reach the
+  # internet at all and never falls back to your home connection. See docs/14.
+  gluetun:
+    image: qmcgaw/gluetun:v3.41.3
+    container_name: gluetun
+    profiles: ["torrent"]
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    environment:
+      - TZ=${TZ:-Etc/UTC}
+      - VPN_SERVICE_PROVIDER=${VPN_PROVIDER:-protonvpn}
+      - VPN_TYPE=${VPN_TYPE:-wireguard}
+      - WIREGUARD_PRIVATE_KEY=${VPN_WIREGUARD_KEY:-}
+      - OPENVPN_USER=${VPN_USER:-}
+      - OPENVPN_PASSWORD=${VPN_PASSWORD:-}
+      - SERVER_COUNTRIES=${VPN_COUNTRIES:-}
+      # Port forwarding lets other peers connect in, which torrents need to do well.
+      - VPN_PORT_FORWARDING=${VPN_PORT_FORWARDING:-on}
+      - PORT_FORWARD_ONLY=${VPN_PORT_FORWARD_ONLY:-on}
+      # Family Hub asks gluetun for the forwarded port (and hands it to qBittorrent) with this key.
+      - HTTP_CONTROL_SERVER_AUTH_DEFAULT_ROLE={"auth":"apikey","apikey":"${GLUETUN_API_KEY:?Set GLUETUN_API_KEY in .env to any long random text (docs/14)}"}
+    volumes:
+      - ${STACK_DIR:-./stack}/gluetun:/gluetun
+    ports:
+      # qBittorrent's page is reached through the VPN container.
+      - "${QBITTORRENT_PORT:-8080}:8080"
+    restart: unless-stopped
+
+  qbittorrent:
+    image: lscr.io/linuxserver/qbittorrent:5.2.4
+    container_name: qbittorrent
+    profiles: ["torrent"]
+    network_mode: "service:gluetun"
+    depends_on:
+      gluetun:
+        condition: service_healthy
+    environment:
+      - PUID=${PUID:-1000}
+      - PGID=${PGID:-1000}
+      - TZ=${TZ:-Etc/UTC}
+      - WEBUI_PORT=8080
+    volumes:
+      - ${STACK_DIR:-./stack}/qbittorrent-config:/config
+      # Films and TV download into DATA_ROOT/torrents, on the same disk as the
+      # media folders, so a finished download is linked into place, not copied.
+      - ${DATA_ROOT:-./stack/data}:/data
+      # Books still go to the finished-downloads folder Family Hub watches.
+      - ${DOWNLOADS_PATH:-${DATA_ROOT:-./stack/data}/torrents/books}:/downloads
+    restart: unless-stopped
+
+  # Films. Finds them through Prowlarr, sends them to qBittorrent and files
+  # them under DATA_ROOT/media/movies. Family Hub is its front end. See docs/14.
+  radarr:
+    image: lscr.io/linuxserver/radarr:6.4.4
+    container_name: radarr
+    profiles: ["media"]
+    environment:
+      - PUID=${PUID:-1000}
+      - PGID=${PGID:-1000}
+      - TZ=${TZ:-Etc/UTC}
+    volumes:
+      - ${STACK_DIR:-./stack}/radarr-config:/config
+      - ${DATA_ROOT:-./stack/data}:/data
+    ports:
+      - "${RADARR_PORT:-7878}:7878"
+    restart: unless-stopped
+
+  # TV shows, the same way, filed under DATA_ROOT/media/tv.
+  sonarr:
+    image: lscr.io/linuxserver/sonarr:4.0.20
+    container_name: sonarr
+    profiles: ["media"]
+    environment:
+      - PUID=${PUID:-1000}
+      - PGID=${PGID:-1000}
+      - TZ=${TZ:-Etc/UTC}
+    volumes:
+      - ${STACK_DIR:-./stack}/sonarr-config:/config
+      - ${DATA_ROOT:-./stack/data}:/data
+    ports:
+      - "${SONARR_PORT:-8989}:8989"
+    restart: unless-stopped
+
+  # Subtitles for everything Radarr and Sonarr bring in.
+  bazarr:
+    image: lscr.io/linuxserver/bazarr:1.5.2
+    container_name: bazarr
+    profiles: ["media"]
+    environment:
+      - PUID=${PUID:-1000}
+      - PGID=${PGID:-1000}
+      - TZ=${TZ:-Etc/UTC}
+    volumes:
+      - ${STACK_DIR:-./stack}/bazarr-config:/config
+      - ${DATA_ROOT:-./stack/data}:/data
+    ports:
+      - "${BAZARR_PORT:-6767}:6767"
+    restart: unless-stopped
+
+  # Watching. Only for trying things on this PC: the home server already has
+  # its own Jellyfin, so leave the "watch" profile off there and enter that
+  # Jellyfin's address and API key in Family Hub instead.
+  jellyfin:
+    image: jellyfin/jellyfin:10.10.7
+    container_name: jellyfin
+    profiles: ["watch"]
+    user: "${PUID:-1000}:${PGID:-1000}"
+    environment:
+      - TZ=${TZ:-Etc/UTC}
+    volumes:
+      - ${STACK_DIR:-./stack}/jellyfin-config:/config
+      - ${STACK_DIR:-./stack}/jellyfin-cache:/cache
+      - ${DATA_ROOT:-./stack/data}/media:/media:ro
+    ports:
+      - "${JELLYFIN_PORT:-8096}:8096"
+    restart: unless-stopped
+
+  # Follows manga and manhwa on reading sites and keeps every chapter as a
+  # CBZ file. Family Hub shows them under Library, Graphic novels. See docs/13.
+  suwayomi:
+    image: ghcr.io/suwayomi/suwayomi-server:v2.4.2366
+    container_name: suwayomi
+    profiles: ["series"]
+    environment:
+      - TZ=${TZ:-Etc/UTC}
+      - DOWNLOAD_AS_CBZ=true
+      # "none" leaves its own page open to anyone on the network. Set
+      # SUWAYOMI_AUTH_MODE=basic_auth with a user name and password to close it.
+      - AUTH_MODE=${SUWAYOMI_AUTH_MODE:-none}
+      - AUTH_USERNAME=${SUWAYOMI_USER:-}
+      - AUTH_PASSWORD=${SUWAYOMI_PASS:-}
+    volumes:
+      # The chapters. Listed first on purpose: the image needs this order.
+      - ${SERIES_PATH:-./stack/series}:/home/suwayomi/.local/share/Tachidesk/downloads
+      - ${STACK_DIR:-./stack}/suwayomi:/home/suwayomi/.local/share/Tachidesk
+    ports:
+      - "${SUWAYOMI_PORT:-4567}:4567"
+    restart: unless-stopped
+
+  # Serves the chapters to reading apps (Tachimanga on an iPad), with an
+  # account and read marks for each person. It only reads the chapters.
+  komga:
+    image: gotson/komga:1.28.1
+    container_name: komga
+    profiles: ["series"]
+    user: "${PUID:-1000}:${PGID:-1000}"
+    environment:
+      - TZ=${TZ:-Etc/UTC}
+    volumes:
+      - ${STACK_DIR:-./stack}/komga-config:/config
+      - ${SERIES_PATH:-./stack/series}:/data:ro
+    ports:
+      - "${KOMGA_PORT:-25600}:25600"
+    restart: unless-stopped

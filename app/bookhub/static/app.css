@@ -1,0 +1,164 @@
+/* Family Hub: the little the designs do not cover. Colours and fonts come only from the design's
+   roles (--accent, --line2 and so on), so this works under every design and colour scheme. */
+[hidden] { display: none !important; }
+.skip { position: absolute; left: -999px; }
+.skip:focus { left: 8px; top: 8px; z-index: 60; padding: 8px 12px; background: var(--accent); color: var(--accent-ink); }
+#main:focus { outline: none; }
+
+/* layout helpers */
+.stack { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 360px), 1fr)); gap: 16px; align-items: start; }
+.row.end { align-items: flex-end; }
+.center { text-align: center; align-items: center; }
+.narrow { align-self: center; width: 100%; max-width: 580px; }
+.list > * { padding: 12px 0; border-top: 1px dashed var(--line); }
+.list > *:first-child { border-top: 0; padding-top: 0; }
+.row > .field { flex: 1 1 200px; max-width: 360px; }
+.row > .field.wide, .field.wide { max-width: none; flex-basis: 100%; }
+.bad { color: var(--warn); }
+td.num, th.num { text-align: right; }
+/* Buttons in a table row keep their words on one line; a wide table scrolls sideways inside its .scroll box. */
+td .btn { white-space: nowrap; flex-shrink: 0; }
+.panel.focus { --bd: var(--accent); }
+.back { align-self: flex-start; display: inline-flex; align-items: center; gap: 8px; min-height: 42px; text-decoration: none; }
+details > summary { cursor: pointer; color: var(--accent); min-height: 42px; display: flex; align-items: center; }
+label.check { display: flex; align-items: center; gap: 10px; color: var(--ink); }
+select:not(.field select) { min-height: 34px; padding: 0 8px; border: 1px solid var(--line2); background: var(--bg); color: var(--ink); }
+input[type="checkbox"] { width: 20px; height: 20px; margin: 0; accent-color: var(--accent); }
+.field input[type="file"] { padding: 8px 12px; }
+.btn.danger { --bd: var(--warn); color: var(--warn); }
+.btn[disabled], .chip[disabled] { opacity: .55; cursor: default; }
+.lab.sep { margin-right: 4px; }
+
+/* the shell before anyone has chosen a profile */
+.shell.signed-out { grid-template-columns: minmax(0, 1fr); }
+.shell.signed-out .side { display: none; }
+.who .arch { flex: none; }
+
+/* book covers and pages */
+.cover.has-img { background-size: cover; background-position: center; background-color: color-mix(in srgb, var(--cv) 70%, #000); }
+.cover.has-img .t { background: rgba(0, 0, 0, .6); padding: 4px 6px; }
+a.cover { text-decoration: none; }
+.coverwrap { position: relative; }
+/* Covers, posters and photos keep their own colours in every scheme; the design otherwise prints them in one ink.
+   The doubled attribute outweighs the design's greyscale and Blueprint tint rules. */
+:root[data-theme][data-theme] :is(.cover, .photo, .f.front, .f.back, .f.spine) { filter: none; }
+:root[data-theme][data-theme] .coverwrap.done .cover { filter: grayscale(.9); opacity: .45; }
+.readnote { position: absolute; left: 0; right: 0; top: 42%; padding: 6px 4px; text-align: center; background: rgba(0, 0, 0, .78);
+  color: #f6f3ec; font-size: 12px; font-weight: 600; letter-spacing: .1em; text-transform: uppercase; pointer-events: none; }
+.readnote.going { top: 30%; background: var(--accent); color: var(--accent-ink); }
+img.thumb { width: 40px; height: 56px; object-fit: cover; background: var(--panel2); flex: none; }
+.pages { display: flex; flex-direction: column; align-items: center; margin: 0 -16px; }
+.pages img { display: block; width: 100%; max-width: 900px; height: auto; min-height: 120px; background: var(--panel); }
+.synopsis { max-width: 68ch; line-height: 1.7; white-space: pre-line; }
+.bside { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.bbody { display: flex; flex-direction: column; gap: 28px; min-width: 0; }
+.stars { display: flex; gap: 2px; margin-left: -4px; }
+.star:not(.on) svg { opacity: .3; }
+
+/* the Appearance card */
+.swatch { display: inline-flex; border: 1px solid var(--line2); }
+.swatch i { width: 14px; height: 18px; display: block; }
+.scheme { flex-direction: column; align-items: flex-start; gap: 6px; min-height: 0; padding: 10px 12px; }
+.looks { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; }
+
+/* a section that is not built yet */
+.soon { align-self: flex-start; max-width: 64ch; }
+
+#toast { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%); z-index: 70; max-width: calc(100vw - 32px);
+  padding: 12px 18px; background: var(--ink); color: var(--bg); font-weight: 600; opacity: 0; pointer-events: none; }
+#toast.show { opacity: 1; }
+/* In this design warn is the accent, so a plain notice is ink and only a problem takes the accent. */
+#toast.err { background: var(--warn); color: var(--accent-ink); }
+@media (prefers-reduced-motion: no-preference) { #toast { transition: opacity .2s; } }
+details > summary.row { justify-content: space-between; color: var(--ink); font-weight: 600; }
+
+/* The page reaches the bottom of the window even when there is little on it. */
+.shell { min-height: 100vh; }
+/* On a phone the sidebar sits above the page as one row. Without this a short page (Photos, say) shared the spare
+   height between the two, and the sidebar row grew tall and empty. */
+@media (max-width: 860px) { .shell { grid-template-rows: auto 1fr; } }
+
+/* Section headings keep their buttons whole; on a phone the heading wraps instead of pushing the page sideways. */
+.ph > .btn, .ph > a.btn { flex-shrink: 0; }
+@media (max-width: 600px) {
+  .panel > .ph:first-child { flex-wrap: wrap; }
+  .panel > .ph:first-child h2, .panel > .ph:first-child .small { white-space: normal; }
+}
+
+/* "What's happening" on a film or show: one line per step, newest at the bottom. */
+.steps { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
+.steps .step { display: grid; grid-template-columns: 22px minmax(0, 1fr) auto; gap: 10px; align-items: start; }
+.steps .mark { font-weight: 700; text-align: center; }
+.steps .step.active .mark { color: var(--accent); }
+.steps .when { white-space: nowrap; }
+.steps .step > span { overflow-wrap: anywhere; }
+.step-now { font-weight: 600; overflow-wrap: anywhere; }
+.step-now.bad { color: var(--warn); }
+details > summary { cursor: pointer; }
+details .steps { margin-top: 12px; }
+
+/* A film or show's working panels sit under the poster and title, using the whole width. */
+.wide-panels { margin-top: 28px; }
+
+/* The corner pop-up that follows a search on every page. */
+.tracker { position: fixed; right: 16px; bottom: 16px; z-index: 60; width: min(320px, calc(100vw - 32px));
+  max-height: min(60vh, 480px); overflow-y: auto; display: flex; flex-direction: column; gap: 12px; padding: 12px 14px;
+  background: var(--panel); color: var(--ink); border: 1px solid var(--line); box-shadow: 0 8px 28px rgba(0, 0, 0, .35); }
+.tracker[hidden] { display: none; }
+.tracker-item { gap: 6px; padding-top: 10px; border-top: 1px solid var(--line); }
+.tracker-title { font-weight: 600; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tracker .btn.sm { flex: none; }
+@media (max-width: 600px) { .tracker { right: 8px; bottom: 8px; width: calc(100vw - 16px); } }
+
+/* Covers always keep the book shape, however long the title: the title shrinks, then is cut off with "…".
+   (Without this a long title made its cover taller, which threw the whole row out of line.) */
+.shelf { align-items: start; }
+.cover { overflow: hidden; min-height: 0; }
+.cover .t { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 6; overflow: hidden;
+  overflow-wrap: anywhere; hyphens: auto; }
+.cover.t-long .t { font-size: 15px; -webkit-line-clamp: 7; }
+.cover.t-xlong .t { font-size: 13px; -webkit-line-clamp: 8; }
+.cover.sm .t { -webkit-line-clamp: 4; }
+
+/* Downloads page: one line per download, long release names cut off with "…" (the full name shows on hover). */
+.torrent + .torrent { border-top: 1px solid var(--line); padding-top: 14px; }
+.torrent-title { font-weight: 600; min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* A search that is still running. Quick look-ups have no count to show, so their bar sweeps instead of filling. */
+.search-progress .bar > i { transition: width .6s linear; }
+.bar.busy { overflow: hidden; }
+.bar.busy > i { width: 30% !important; }
+@media (prefers-reduced-motion: no-preference) {
+  .bar.busy > i { animation: bar-sweep 1.4s ease-in-out infinite alternate; }
+}
+@keyframes bar-sweep { from { margin-left: 0; } to { margin-left: 70%; } }
+
+/* A series shown as one card: a second and third cover peek out behind the first. */
+/* The stack's back covers sit up and to the right, inside the card, so a phone never scrolls sideways. */
+.coverwrap.stack-of { position: relative; margin: 8px 8px 0 0; }
+/* A title or author with no spaces (a web address, say) wraps rather than widening the shelf. */
+.book { overflow-wrap: anywhere; }
+.coverwrap.stack-of::before, .coverwrap.stack-of::after { content: ""; position: absolute; inset: 0; border: 1px solid var(--line); background: var(--panel); z-index: 0; }
+.coverwrap.stack-of::before { transform: translate(8px, -8px); }
+.coverwrap.stack-of::after { transform: translate(4px, -4px); }
+.coverwrap.stack-of > .cover { position: relative; z-index: 1; }
+
+/* Downloads → Speed: one slider from fastest to slowest. */
+.speed-now { font-size: 18px; }
+.speed-slider { display: flex; align-items: center; gap: 12px; }
+.speed-slider input[type="range"] { flex: 1; min-width: 0; accent-color: var(--accent); height: 28px; }
+.speed-slider + form input[type="number"] { width: 90px; min-height: 34px; padding: 0 8px; border: 1px solid var(--line2); background: var(--bg); color: var(--ink); }
+.speed-fig { margin: 0; display: grid; gap: 6px; }
+.speed-svg { display: block; width: 100%; height: 120px; border: 1px solid var(--line); background: var(--panel2); touch-action: none; }
+.speed-svg polyline { fill: none; stroke-width: 2; vector-effect: non-scaling-stroke; stroke-linejoin: round; }
+.speed-svg .sc-down { stroke: var(--accent); }
+.speed-svg .sc-up { stroke: var(--dim); }
+.speed-svg .sc-limit { stroke: var(--ink); stroke-width: 1; stroke-dasharray: 4 4; vector-effect: non-scaling-stroke; opacity: .6; }
+.speed-svg .sc-axis { stroke: var(--line); stroke-width: 1; vector-effect: non-scaling-stroke; }
+.speed-svg .sc-cross { stroke: var(--ink); stroke-width: 1; vector-effect: non-scaling-stroke; opacity: .5; }
+.key { display: inline-flex; align-items: center; gap: 6px; }
+.key i { width: 14px; height: 2px; display: inline-block; }
+.key .k-down { background: var(--accent); }
+.key .k-up { background: var(--dim); }
+.key .k-limit { border-top: 1px dashed var(--ink); height: 0; }

@@ -1,0 +1,31 @@
+# Private settings and data: never commit these.
+# .env is the household's one settings file (every password and key); .env.example is its public template.
+.env
+.env.before-restore
+# A setup file (Admin, Hub, Setup file) holds every password, even though it is locked.
+family-hub-setup-*.zip
+stack/
+demo/
+backups/
+bookhub-move-*.tar.gz
+*.db
+*.db-wal
+*.db-shm
+secret.key
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Editors and systems
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Household-only artwork and the design source files it ships in: never commit these
+themes/skinart/
+themes/check/
+themes/family-hub-designs.zip

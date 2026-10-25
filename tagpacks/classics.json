@@ -1,0 +1,31 @@
+{
+  "name": "Starter classics",
+  "description": "Community tags for well-known public-domain novels. Add your own packs next to this file and share them with a pull request.",
+  "books": [
+    {"title": "Pride and Prejudice", "author": "Jane Austen", "tags": ["Enemies to lovers", "Slow burn", "Witty banter", "Marriage plot"]},
+    {"title": "Emma", "author": "Jane Austen", "tags": ["Friends to lovers", "Slow burn", "Matchmaking", "Witty banter"]},
+    {"title": "Persuasion", "author": "Jane Austen", "tags": ["Second chance", "Slow burn", "Pining"]},
+    {"title": "Northanger Abbey", "author": "Jane Austen", "tags": ["Coming of age", "Satire", "Witty banter"]},
+    {"title": "Sense and Sensibility", "author": "Jane Austen", "tags": ["Slow burn", "Sisters", "Marriage plot"]},
+    {"title": "Mansfield Park", "author": "Jane Austen", "tags": ["Slow burn", "Class difference", "Marriage plot"]},
+    {"title": "Jane Eyre", "author": "Charlotte Bronte", "tags": ["Slow burn", "Class difference", "Brooding hero", "Dark secret"]},
+    {"title": "Villette", "author": "Charlotte Bronte", "tags": ["Slow burn", "Unreliable narrator", "Pining"]},
+    {"title": "Wuthering Heights", "author": "Emily Bronte", "tags": ["Revenge", "Unreliable narrator", "Doomed love", "Brooding hero"]},
+    {"title": "The Tenant of Wildfell Hall", "author": "Anne Bronte", "tags": ["Dark secret", "Second chance", "Slow burn"]},
+    {"title": "Dracula", "author": "Bram Stoker", "tags": ["Found family", "Told in letters", "Monster hunt"]},
+    {"title": "Frankenstein", "author": "Mary Shelley", "tags": ["Unreliable narrator", "Told in letters", "Revenge"]},
+    {"title": "The Picture of Dorian Gray", "author": "Oscar Wilde", "tags": ["Dark secret", "Corruption arc", "Witty banter"]},
+    {"title": "Strange Case of Dr Jekyll and Mr Hyde", "author": "Robert Louis Stevenson", "tags": ["Dark secret", "Told in letters", "Corruption arc"]},
+    {"title": "The Turn of the Screw", "author": "Henry James", "tags": ["Unreliable narrator", "Ghost story", "Dark secret"]},
+    {"title": "The Woman in White", "author": "Wilkie Collins", "tags": ["Dark secret", "Told in letters", "Mistaken identity"]},
+    {"title": "Moby-Dick", "author": "Herman Melville", "tags": ["Revenge", "Obsession", "Sea voyage"]},
+    {"title": "Treasure Island", "author": "Robert Louis Stevenson", "tags": ["Coming of age", "Sea voyage", "Treasure hunt"]},
+    {"title": "Little Women", "author": "Louisa May Alcott", "tags": ["Found family", "Sisters", "Coming of age"]},
+    {"title": "Good Wives", "author": "Louisa May Alcott", "tags": ["Sisters", "Found family", "Marriage plot"]},
+    {"title": "Anne of Green Gables", "author": "L. M. Montgomery", "tags": ["Found family", "Coming of age", "Rivals to friends"]},
+    {"title": "The Secret Garden", "author": "Frances Hodgson Burnett", "tags": ["Found family", "Coming of age", "Healing"]},
+    {"title": "Heidi", "author": "Johanna Spyri", "tags": ["Found family", "Healing", "Coming of age"]},
+    {"title": "The Time Machine", "author": "H. G. Wells", "tags": ["Time travel", "Told in letters"]},
+    {"title": "A Christmas Carol", "author": "Charles Dickens", "tags": ["Ghost story", "Redemption arc", "Time travel"]}
+  ]
+}
