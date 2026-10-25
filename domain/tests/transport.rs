@@ -13,7 +13,14 @@ use std::sync::{
 
 #[tokio::test]
 async fn adapter_rejects_redirects_oversized_nonobject_and_credential_echo_responses() {
-    for fault in ["redirect", "oversized", "nonobject", "echo", "server-error"] {
+    for fault in [
+        "redirect",
+        "oversized",
+        "nonobject",
+        "echo",
+        "escaped-echo",
+        "server-error",
+    ] {
         let directory = tempfile::tempdir().unwrap();
         let credential = directory.path().join("family-domain.credential");
         let token = "d".repeat(64);
@@ -30,6 +37,7 @@ async fn adapter_rejects_redirects_oversized_nonobject_and_credential_echo_respo
                     "oversized"=>Response::new(Body::from(json!({"body":"x".repeat(family_domain::MAX_RESPONSE_BYTES+1)}).to_string())),
                     "nonobject"=>Response::new(Body::from("[1]")),
                     "echo"=>Response::new(Body::from(json!({"notes":[],"debug":token}).to_string())),
+                    "escaped-echo"=>Response::new(Body::from(format!("{{\"notes\":[],\"debug\":\"{}\"}}", "\\u0064".repeat(64)))),
                     _=>Response::builder().status(500).body(Body::from("private internal details")).unwrap(),
                 }
             }})).route("/trap",get(move||{let calls=trap_count.clone();async move {calls.fetch_add(1,Ordering::SeqCst);axum::Json(json!({"notes":[]}))}}));

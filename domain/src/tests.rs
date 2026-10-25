@@ -619,8 +619,44 @@ async fn worst_valid_escaped_notes_keep_complete_http_and_mcp_content_within_cap
         assert!(http_size > 65536 && http_size <= MAX_RESPONSE_BYTES);
         let final_result = mcp::tool_result(Ok(value.clone()));
         assert!(serde_json::to_vec(&final_result).unwrap().len() <= 256 * 1024);
-        assert_eq!(final_result.structured_content, Some(value));
+        let wire = serde_json::to_value(&final_result).unwrap();
+        let fallback: Value =
+            serde_json::from_str(wire["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(Some(fallback), final_result.structured_content);
+        if value.get("note").is_some() {
+            assert_eq!(final_result.structured_content, Some(value));
+        }
     }
+    // Even a final HTTP page may need several MCP pages. Escaped text must
+    // survive intact, and the shortened cursor must neither skip nor repeat.
+    let mut gathered = Vec::new();
+    let mut cursor = None;
+    let mut pages = 0;
+    loop {
+        let page = f
+            .store
+            .list(
+                &a,
+                &scope,
+                &NoteQuery {
+                    q: String::new(),
+                    cursor,
+                },
+            )
+            .unwrap();
+        let result = mcp::tool_result(Ok(page));
+        assert_ne!(result.is_error, Some(true));
+        let value = result.structured_content.unwrap();
+        gathered.extend(value["notes"].as_array().unwrap().iter().cloned());
+        pages += 1;
+        assert!(pages <= 50);
+        cursor = value["next_cursor"].as_str().map(str::to_string);
+        if cursor.is_none() {
+            break;
+        }
+    }
+    assert!(pages > 1);
+    assert_eq!(gathered, *list["notes"].as_array().unwrap());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
     let server = tokio::spawn(axum::serve(listener, crate::http::router(f.store)).into_future());

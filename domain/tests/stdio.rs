@@ -151,6 +151,12 @@ async fn ui_crud_and_real_stdio_mcp_use_the_same_scoped_store() -> Result<()> {
     send(&mut input,json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"notes_read","arguments":{"id":created["note"]["id"]}}})).await?;
     let read = response(&mut output, 3).await?;
     assert_eq!(read["result"]["structuredContent"], created);
+    let text_result: Value = serde_json::from_str(
+        read["result"]["content"][0]["text"]
+            .as_str()
+            .context("Missing JSON text fallback")?,
+    )?;
+    assert_eq!(text_result, created);
     for (id, name, args) in [
         (4, "notes_list", json!({"subject":"user-b"})),
         (5, "notes_create", body.clone()),
