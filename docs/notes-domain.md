@@ -96,3 +96,11 @@ Stable error codes are `validation_error` (400), `access_denied` (403), `not_fou
 Rust tests cover two-user isolation, shared edits, read-only MCP credentials, mismatched binding scope/subject, profile revocation, inactive authority, stale revisions, idempotent replay after reopening, bounded listing, offline import rollback/replay and a real loopback daemon/native stdio child interaction with a clean environment. Python bridge tests cover view-context binding, guest/override rejection, same-origin enforcement, fixed routes, credential isolation, redirects, malformed/oversized responses and offline errors. Tests use only synthetic temporary data.
 
 The core still owns whether an agent may read a particular connection. The domain separately verifies the connection's current scope membership. Agent-written notes remain disabled until a host-supplied durable operation identity and reconciliation contract exist; an agent-generated JSON field is not a substitute for those controls.
+
+## Protocol compatibility and CI
+
+The MCP Tools specification recommends duplicating structured JSON in a text block for older clients. This development adapter instead returns complete data once in `structuredContent`, with a fixed explanatory text block: duplicating a worst-case escaped list can exceed the core's 256 KiB result limit. Clients that only read text blocks cannot use this adapter yet. Byte-budgeted pages with a full JSON text fallback are a future compatibility improvement. This is an explicit deviation from a recommendation, not a claim of support for every MCP client. [MCP structured content](https://modelcontextprotocol.io/specification/2025-11-25/server/tools#structured-content), checked 2026-10-25.
+
+Local stdio is also not an isolation boundary when a trusted host can spawn arbitrary processes. The current adapter fixes its executable, arguments and scope; OS sandboxing remains separate work. [MCP local server and proxy security](https://modelcontextprotocol.io/docs/2025-11-25/tutorials/security/security_best_practices#stdio-transport-security-in-proxy-scenarios).
+
+`domain/rust-toolchain.toml` pins Rust 1.92.0. The Rust domain workflow runs formatting, locked tests, clippy and binary builds on Windows and Ubuntu. A configured workflow is not evidence that a hosted run completed; local verification results are recorded separately.
