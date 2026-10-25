@@ -37,7 +37,7 @@ const AssistantUI = (() => {
     if (quickWanted && !assistantRoute() && !active) openQuick(false).catch(oops);
   }
   const assistantRoute = () => /^#\/?assistant(?:\/|$)/.test(location.hash);
-  const fullChatRoute = () => assistantRoute() && !['background', 'memory', 'activity'].includes(location.hash.replace(/^#\/?/, '').split('/')[1]);
+  const fullChatRoute = () => assistantRoute() && !['background', 'memory', 'activity', 'permissions'].includes(location.hash.replace(/^#\/?/, '').split('/')[1]);
   function updateLauncher() {
     if (!launcher) {
       launcher = el('button', { class: 'assistant-quick-launcher', type: 'button', text: 'Quick chat',
@@ -100,7 +100,7 @@ const AssistantUI = (() => {
 
   class View {
     constructor(tab, quickOnly = false) {
-      this.tab = ['background', 'memory', 'activity'].includes(tab) ? tab : 'chat';
+      this.tab = ['background', 'memory', 'activity', 'permissions'].includes(tab) ? tab : 'chat';
       this.context = familyContext;
       this.quickOnly = quickOnly; this.quickFrame = null; this.quickBody = null; this.scopeSelectors = [];
       this.alive = true; this.timer = null; this.snapshot = null; this.scope = selectedScope; this.selected = ''; this.chat = null;
@@ -247,8 +247,13 @@ const AssistantUI = (() => {
         const snapshot = await this.request('GET', 'state');
         if (version !== this.stateVersion) return;
         this.snapshot = snapshot;
+        const previousScope = this.scope;
         if (!list(snapshot.spaces).some((s) => s.id === this.scope)) this.scope = snapshot.user.private_space;
         if (!list(snapshot.spaces).some((s) => s.id === this.scope)) this.scope = list(snapshot.spaces)[0]?.id || '';
+        if (this.tab === 'permissions' && previousScope !== this.scope) {
+          this.grantsScope = null;
+          fill(this.body, paragraph('Loading permissions for this workspace…', 'small dim'));
+        }
         selectedScope = this.scope;
         if (!this.scopeSelect) this.buildControls();
         this.scopeSelectors.forEach((select) => { select.value = this.scope; });
@@ -267,7 +272,8 @@ const AssistantUI = (() => {
           this.updateComposer();
           await this.loadChat();
         }
-        if (this.tab !== 'chat') this.renderBackground();
+        if (this.tab === 'permissions') await this.loadGrants();
+        else if (this.tab !== 'chat') this.renderBackground();
       })();
       try { await this.refreshing; } finally { this.refreshing = null; }
     }
@@ -277,6 +283,10 @@ const AssistantUI = (() => {
         const hadFocus = document.activeElement === select;
         this.switching = true; this.stateVersion++;
         this.scope = select.value; selectedScope = this.scope; this.selected = ''; this.chat = null; this.selectionVersion++;
+        if (this.tab === 'permissions') {
+          this.grantsScope = null;
+          fill(this.body, paragraph('Loading permissions for this workspace…', 'small dim'));
+        }
         if (this.transcript) { this.transcriptNodes.clear(); fill(this.transcript); this.composer.value = drafts.get(this.scope) || ''; }
         this.backgroundSignature = ''; this.conversationSignature = '';
         this.updateComposer();
@@ -297,7 +307,7 @@ const AssistantUI = (() => {
         fill(this.controls, field('Workspace', select), paragraph('Connected as ' + this.snapshot.user.name, 'small dim'));
         return;
       }
-      const controlsLinks = [['background', 'Background'], ['memory', 'Memory'], ['activity', 'Activity']].map(([id, title]) =>
+      const controlsLinks = [['background', 'Background'], ['memory', 'Memory'], ['activity', 'Activity'], ['permissions', 'Permissions']].map(([id, title]) =>
         el('a', { href: '#/assistant/' + id, 'aria-current': this.tab === id ? 'page' : null, text: title }));
       fill(this.controls,
         el('div', { class: 'row between' }, el('div', {}, el('h1', { text: 'Assistant' }),
@@ -484,6 +494,111 @@ const AssistantUI = (() => {
       const button = el('button', { class: cls, type: 'button', text: label, 'data-focus-key': key,
         'data-operation': operation, disabled: this.pending.has(operation), onclick: () => this.act(key, path, body, button) });
       return button;
+    }
+    async loadGrants(force = false) {
+      if (!force && this.grantsScope === this.scope) return;
+      const scope = this.scope;
+      const version = this.stateVersion;
+      const result = await this.request('GET', 'grants?space_id=' + encodeURIComponent(scope));
+      if (!this.live() || scope !== this.scope || version !== this.stateVersion) return;
+      if (!Array.isArray(result.grants) || result.grants.some((grant) => grant.space_id !== scope)) throw new Error('Permissions could not be loaded for this workspace.');
+      this.grantsScope = scope;
+      replacePreservingFocus(this.body, el('h2', { text: 'Permissions' }),
+        paragraph('Choose what your assistant may do in this workspace. These settings belong to your account, including in a shared workspace.'),
+        paragraph('Changes apply after Save. Existing approvals are rechecked when a permission changes. Work already dispatched cannot be undone here.', 'small dim'),
+        el('div', { class: 'assistant-records' }, list(result.grants).map((grant) => this.grantCard(grant))));
+    }
+    grantCard(grant) {
+      const behavior = el('select', { 'aria-label': 'Behavior for ' + grant.capability },
+        [['allow', 'Automatic within these limits'], ['current_task', 'Only for a verified current request'],
+          ['conditional', 'Conditional'], ['ask', 'Ask each time'], ['deny', 'Blocked'], ['manual', 'Manual only']]
+          .map(([value, text]) => el('option', { value, text })));
+      behavior.value = ({ autonomous: 'allow', confirm: 'ask' })[grant.mode] || grant.mode;
+      const help = paragraph('', 'small dim');
+      const resourceMode = el('select', { 'aria-label': 'Resource access for ' + grant.capability },
+        el('option', { value: 'all', text: 'All eligible resources, including new ones' }),
+        el('option', { value: 'selected', text: 'Only selected resources' }));
+      resourceMode.value = grant.resources === null ? 'all' : 'selected';
+      const resourceChecks = list(grant.resource_choices).map((choice) => {
+        const input = el('input', { type: 'checkbox', value: choice.value });
+        input.checked = list(grant.resources).includes(choice.value);
+        return { input, node: el('label', { class: 'assistant-grant-choice' }, input, el('span', { text: choice.label })) };
+      });
+      for (const missing of list(grant.resources).filter((value) => !list(grant.resource_choices).some((c) => c.value === value))) {
+        const input = el('input', { type: 'checkbox', value: missing }); input.checked = true;
+        resourceChecks.push({ input, node: el('label', { class: 'assistant-grant-choice' }, input, el('span', { text: 'Unavailable selection: ' + missing + ' — remove before saving' })) });
+      }
+      const resourceList = el('div', { class: 'assistant-grant-choices' },
+        resourceChecks.length ? resourceChecks.map((item) => item.node) : paragraph('No resources are currently available.', 'small dim'),
+        paragraph('An empty selection blocks this action for every resource.', 'small dim'));
+      const expiryMode = el('select', { 'aria-label': 'Expiry for ' + grant.capability },
+        el('option', { value: 'none', text: 'No expiry' }), el('option', { value: 'until', text: 'Until a date and time' }));
+      expiryMode.value = grant.expires_at === null ? 'none' : 'until';
+      const expiry = el('input', { type: 'datetime-local', 'aria-label': 'Permission expiry date and time' });
+      if (grant.expires_at) {
+        const date = new Date(grant.expires_at);
+        expiry.value = new Date(date.getTime() - date.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
+      }
+      const destinationChecks = list(grant.destination_choices).map((choice) => {
+        const allow = el('input', { type: 'checkbox', value: choice.value }); allow.checked = list(grant.destinations).includes(choice.value);
+        const automatic = el('input', { type: 'checkbox', value: choice.value }); automatic.checked = list(grant.auto_destinations).includes(choice.value);
+        allow.addEventListener('change', () => { automatic.disabled = !allow.checked; if (!allow.checked) automatic.checked = false; });
+        automatic.disabled = !allow.checked;
+        return { allow, automatic, node: el('div', {},
+          el('label', { class: 'assistant-grant-choice' }, allow, el('span', { text: 'Allow the configured connector' })),
+          el('label', { class: 'assistant-grant-choice' }, automatic, el('span', { text: 'Use without asking when Conditional is selected' }))) };
+      });
+      const status = paragraph('', 'small dim'); status.setAttribute('role', 'status');
+      const save = el('button', { class: 'btn pri', type: 'submit', text: 'Save permission', 'data-save-grant': '' });
+      const reload = el('button', { class: 'btn', type: 'button', text: 'Reload permissions', onclick: async () => {
+        try { await this.loadGrants(true); } catch (error) { this.error(error); }
+      } });
+      const update = () => {
+        resourceList.hidden = resourceMode.value !== 'selected'; expiry.hidden = expiryMode.value !== 'until';
+        help.textContent = ({ allow: 'Routine actions may run automatically within this saved scope.',
+          current_task: 'A matching request must be verified. Otherwise the assistant asks for the exact action.',
+          conditional: 'Actions outside automatic connector choices require review. Hard limits still apply.',
+          ask: 'Every new action waits for your answer. You can answer later.',
+          deny: 'The assistant cannot use this tool.', manual: 'This tool stays unavailable to autonomous execution.' })[behavior.value];
+      };
+      behavior.addEventListener('change', update); resourceMode.addEventListener('change', update); expiryMode.addEventListener('change', update); update();
+      let saving = false;
+      const form = el('form', { class: 'assistant-grant-form', onsubmit: async (event) => {
+        event.preventDefault();
+        if (saving || !this.live() || this.switching || this.scope !== grant.space_id || this.grantsScope !== grant.space_id || !card.isConnected) return;
+        const expiresAt = expiryMode.value === 'none' ? null : new Date(expiry.value).getTime();
+        if (expiresAt !== null && !Number.isFinite(expiresAt)) { status.textContent = 'Choose an expiry date and time.'; return; }
+        const change = { space_id: grant.space_id, capability: grant.capability, expected_revision: grant.revision,
+          mode: behavior.value, expires_at: expiresAt,
+          resources: resourceMode.value === 'all' ? null : resourceChecks.filter((item) => item.input.checked).map((item) => item.input.value),
+          destinations: destinationChecks.filter((item) => item.allow.checked).map((item) => item.allow.value),
+          auto_destinations: destinationChecks.filter((item) => item.allow.checked && item.automatic.checked).map((item) => item.automatic.value) };
+        saving = true; save.disabled = true; status.textContent = 'Saving…';
+        const scope = this.scope;
+        try {
+          const saved = await this.request('POST', 'grants', change);
+          if (this.live() && this.scope === scope && card.isConnected) {
+            const replacement = this.grantCard(saved); replacement.open = true; card.replaceWith(replacement);
+            replacement.querySelector('[data-save-grant]')?.focus({ preventScroll: true });
+            this.announce('Permission saved. Pending actions will use the current limits.');
+          }
+        } catch (error) {
+          if (!(error instanceof Stale)) status.textContent = error.status === 409 ? 'This permission changed elsewhere. Your edits remain here. Reload before saving again.' : error.message;
+        } finally { saving = false; save.disabled = false; }
+      } }, paragraph(({ read: 'Reads information', local_write: 'Changes local data', external_write: 'Changes an external service',
+          destructive: 'Can remove data', financial: 'Can move or spend money', credential_use: 'Uses a protected connection',
+          permission_change: 'Changes access permissions' })[grant.effect] || 'Effect awaiting operator review', 'small dim'),
+        field('Behavior', behavior), help,
+        !grant.reviewed ? paragraph('This connector needs operator review before it can run automatically.', 'small dim') : null,
+        grant.resource_scope === 'connector' ? paragraph('This grant covers the connector tool as a whole. It cannot restrict individual URLs, recipients or records inside that tool.', 'small dim') : null,
+        field('Resources', resourceMode), resourceList,
+        destinationChecks.length ? el('div', {}, el('h4', { text: 'Connector access' }), destinationChecks.map((item) => item.node)) : null,
+        field('Expiry', expiryMode), expiry, paragraph('Dates and times use this device’s timezone. An expiry must be within one year.', 'small dim'),
+        el('div', { class: 'row' }, save, reload), status);
+      const card = el('details', { class: 'panel cut assistant-grant', 'data-key': grant.capability },
+        el('summary', {}, el('strong', { text: grant.capability }), el('span', { class: 'small dim', text: ' · ' + behavior.selectedOptions[0].textContent })),
+        paragraph(grant.description, 'small dim'), form);
+      return card;
     }
     renderBackground() {
       const snapshot = this.snapshot;

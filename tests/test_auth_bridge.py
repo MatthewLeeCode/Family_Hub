@@ -79,6 +79,30 @@ def link(client, profile="You", account="matt"):
     return result
 
 
+def test_permission_routes_forward_only_a_single_safe_workspace(client, fake_core):
+    link(client)
+    assert client.get("/api/assistant/grants?space_id=space-matt").status_code == 200
+    assert fake_core["calls"][-1]["url"] == "http://127.0.0.1:4280/api/grants?space_id=space-matt"
+    before = len(fake_core["calls"])
+    for suffix in ["", "?space_id=space-matt&space_id=space-alex", "?space_id=../private", "?space_id=space-matt&url=https://example.test"]:
+        assert client.get("/api/assistant/grants" + suffix).status_code == 400
+    assert len(fake_core["calls"]) == before
+    body = {"space_id": "space-matt", "capability": "mail.search", "expected_revision": 1,
+            "mode": "ask", "expires_at": None, "resources": None, "destinations": [], "auto_destinations": []}
+    assert client.post("/api/assistant/grants", json=body).status_code == 200
+    assert fake_core["calls"][-1]["json"] == body
+    assert fake_core["calls"][-1]["url"].endswith("/api/grants")
+
+
+def test_permission_routes_reject_stale_context_before_core_dispatch(client, fake_core):
+    link(client)
+    client.environ_base["HTTP_X_ASSISTANT_CONTEXT"] = "0" * 64
+    before = len(fake_core["calls"])
+    assert client.get("/api/assistant/grants?space_id=space-matt").status_code == 409
+    assert client.post("/api/assistant/grants", json={"mode": "allow"}).status_code == 409
+    assert len(fake_core["calls"]) == before
+
+
 def sid(client):
     return client.get_cookie("bookhub").value
 

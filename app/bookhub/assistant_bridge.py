@@ -7,7 +7,7 @@ import ipaddress
 import hmac
 import json
 import re
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, urlencode
 
 import requests
 from flask import Blueprint, current_app, jsonify, make_response, request, session
@@ -68,6 +68,7 @@ def call(method, path, data=None, login=False):
             messages = {400: "The assistant rejected that request.", 401: "Sign in to your assistant account.",
                         403: "Your assistant account cannot perform that action.", 404: "That assistant item was not found.",
                         409: "That assistant item changed. Refresh and try again.", 413: "That request is too large.",
+                        422: "Check the fields in that assistant request.",
                         429: "The assistant is busy. Try again shortly."}
             return fail(messages.get(response.status_code, "The assistant could not complete that request."),
                         response.status_code if response.status_code in messages else 502)
@@ -155,6 +156,7 @@ def logout(who):
 @bp.route("/approvals/<string:item>", methods=["POST"])
 @bp.route("/responsibilities/<string:item>", methods=["POST"])
 @bp.route("/policies", methods=["POST"])
+@bp.route("/grants", methods=["GET", "POST"])
 @profile_only
 def forward(who, item=None):
     denied = usable_profile()
@@ -168,4 +170,8 @@ def forward(who, item=None):
     if request.method != "GET" and not isinstance(body, dict):
         return fail("Expected an object.")
     path = request.path.removeprefix("/api/assistant/")
+    if path == "grants" and request.method == "GET":
+        if set(request.args) != {"space_id"} or len(request.args.getlist("space_id")) != 1 or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", request.args["space_id"]):
+            return fail("Choose a workspace.")
+        path += "?" + urlencode({"space_id": request.args["space_id"]})
     return call(request.method, path, body)

@@ -74,3 +74,10 @@
   .assistant-transcript { height: 42vh; min-height: 200px; }
   .assistant-chat-layout { gap: 20px; }
 }
+:root .assistant-records .assistant-grant { display: block; padding: 16px; }
+.assistant-grant-form { display: grid; gap: 12px; margin-top: 16px; }
+.assistant-grant-choices { display: grid; gap: 8px; max-height: 260px; overflow: auto; padding: 4px; }
+.assistant-grant-choice { display: flex; align-items: flex-start; gap: 10px; font-size: .9rem; }
+.assistant-grant-choice input { width: auto; flex: 0 0 auto; margin-top: 3px; }
+.assistant-grant summary { cursor: pointer; overflow-wrap: anywhere; }
+.assistant-grant-form [hidden] { display: none; }
